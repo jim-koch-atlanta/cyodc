@@ -1,0 +1,29 @@
+[project]
+name = "cyodc"
+version = "0.1.0"
+description = "Choose Your Own Dungeon Crawler — AI-narrated text dungeon crawler"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "langgraph>=0.2.60",
+    "langchain-anthropic>=0.3",
+    "langchain-core>=0.3",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "python-dotenv>=1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "httpx>=0.27",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.uv]
+package = false
