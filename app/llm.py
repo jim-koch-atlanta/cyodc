@@ -14,6 +14,7 @@ and the session endpoints so it is never mistaken for real narration.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from functools import lru_cache
@@ -24,6 +25,7 @@ from langchain_core.messages import (
     BaseMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 
 from app.config import get_settings
@@ -98,6 +100,29 @@ def run_agent(role: str, history: list[BaseMessage]) -> AIMessage:
     if isinstance(reply, AIMessage):
         return reply
     return AIMessage(content=message_text(reply))
+
+
+def run_agent_with_tools(
+    role: str, history: list[BaseMessage], tools: list | None
+) -> AIMessage:
+    """Like `run_agent`, but binds `tools` so the model can call them.
+
+    `tools=None`/empty forces a plain narration turn — used to end the tool loop
+    without leaving a dangling `tool_use`. In stub mode, simple commands are
+    routed to tool calls so the game is playable offline.
+    """
+    if role not in MODEL_BY_ROLE:
+        raise ValueError(f"unknown agent role: {role!r}")
+
+    if get_settings().resolved_llm_mode == "stub":
+        return _stub_reply_with_tools(role, history, tools)
+
+    system = load_system_prompt(role)
+    model = _build_anthropic(role)
+    if tools:
+        model = model.bind_tools(tools)
+    reply = model.invoke([SystemMessage(content=system), *_to_anthropic_history(history)])
+    return reply if isinstance(reply, AIMessage) else AIMessage(content=message_text(reply))
 
 
 def _build_anthropic(role: str):
@@ -180,9 +205,10 @@ _MANIPULATION_PATTERNS = tuple(
         # legendary / artifact loot claims
         r"\blegendary\b",
         r"\bartifact\b",
-        # a big number pinned to a game stat, in either order
-        r"\b\d{2,}\s*(hp|health|hit\s*points?|gold|coins?|gp|xp|mana|damage|dmg|str|dex|con|int|wis|cha)\b",
-        r"\b(hp|health|gold|xp|mana|strength|str|dex|con|int|wis|cha)\s*(is|=|:|of)?\s*\d{2,}\b",
+        # a BIG number pinned to a game stat, in either order (3+ digits so a
+        # player merely noting a current stat — "HP is 20", "INT is 10" — is fine)
+        r"\b\d{3,}\s*(hp|health|hit\s*points?|gold|coins?|gp|xp|mana|damage|dmg|str|dex|con|int|wis|cha)\b",
+        r"\b(hp|health|gold|xp|mana|strength|str|dex|con|int|wis|cha)\s*(is|=|:|of)?\s*\d{3,}\b",
         # "give/grant me <loot>"
         r"\b(give|grant|award|hand|gimme)\s+(me|myself|us)?\b.{0,20}\b"
         r"(gold|coins?|loot|items?|swords?|weapons?|xp|potions?|gear|armou?r|artifact|money|treasure|keys?)\b",
@@ -230,3 +256,103 @@ def _stub_reply(role: str, history: list[BaseMessage]) -> AIMessage:
     digest = hashlib.sha256(last.lower().encode("utf-8")).hexdigest()
     line = _STUB_LINES[int(digest, 16) % len(_STUB_LINES)]
     return AIMessage(content=line.format(echo=_short_echo(last)))
+
+
+# --- Offline stub: command -> tool routing so M2 is playable without a key ---
+def _stub_call_id(seed_text: str, name: str) -> str:
+    return "stub-" + hashlib.sha256(f"{name}:{seed_text}".encode()).hexdigest()[:16]
+
+
+def _stub_intent_to_tool(text: str, available: set[str]) -> tuple[str, dict] | None:
+    t = " ".join(text.lower().split())
+    if "inventory" in available and re.search(
+        r"\b(inventory|inv|what am i (carrying|holding)|my (items|stuff|bag|pack))\b", t
+    ):
+        return "inventory", {}
+    if "look" in available and re.search(
+        r"\b(look|examine|inspect|survey|look around|where am i|what do i see)\b", t
+    ):
+        return "look", {}
+    if "move" in available:
+        m = re.match(
+            r"(?:go|move|walk|head|run|travel)?\s*(?:to the|towards|to)?\s*"
+            r"(north|south|east|west|up|down|left|right|n|s|e|w)\b",
+            t,
+        )
+        if m:
+            return "move", {"direction": m.group(1)}
+    if "take" in available:
+        m = re.search(r"\b(?:take|grab|pick up|pick|collect|loot|get|snatch)\b\s+(.+)", t)
+        if m:
+            return "take", {"item": m.group(1).strip()}
+    if "use" in available:
+        m = re.search(r"\b(?:use|drink|eat|read|activate|light|consume|quaff)\b\s+(.+)", t)
+        if m:
+            return "use", {"item": m.group(1).strip()}
+    return None
+
+
+def _stub_reply_with_tools(
+    role: str, history: list[BaseMessage], tools: list | None
+) -> AIMessage:
+    last = history[-1] if history else None
+    if isinstance(last, ToolMessage):
+        return AIMessage(content=_narrate_tool_result(last))
+
+    last_human = _last_human_text(history)
+    if not last_human:
+        return AIMessage(content=_STUB_COLD_OPEN)
+    if _is_manipulation(last_human):
+        return AIMessage(content=_STUB_DEFLECTION)
+
+    if tools:
+        available = {getattr(t, "name", "") for t in tools}
+        intent = _stub_intent_to_tool(last_human, available)
+        if intent is not None:
+            name, args = intent
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": name, "args": args, "id": _stub_call_id(last_human, name), "type": "tool_call"}
+                ],
+            )
+
+    digest = hashlib.sha256(last_human.lower().encode("utf-8")).hexdigest()
+    line = _STUB_LINES[int(digest, 16) % len(_STUB_LINES)]
+    return AIMessage(content=line.format(echo=_short_echo(last_human)))
+
+
+def _narrate_tool_result(tool_msg: ToolMessage) -> str:
+    """Turn a tool's JSON result into short Announcer-flavored narration (stub only)."""
+    try:
+        data = json.loads(tool_msg.content)
+    except (ValueError, TypeError):
+        return "The Delve processes your action with bureaucratic indifference."
+
+    if not data.get("ok", True):
+        return data.get("message", "That doesn't work, and the audience noticed.")
+
+    if "exits" in data and "room" in data:  # look / move
+        parts: list[str] = []
+        if data.get("message"):
+            parts.append(data["message"])
+        if data.get("description"):
+            parts.append(data["description"])
+        if data.get("items_here"):
+            parts.append("Here: " + ", ".join(data["items_here"]) + ".")
+        parts.append(
+            "Exits: " + ", ".join(data["exits"]) + "."
+            if data.get("exits")
+            else "There are no obvious exits."
+        )
+        return " ".join(parts)
+
+    if "items" in data and "gold" in data:  # inventory
+        if not data["items"]:
+            return f"You're carrying nothing. Gold: {data['gold']} · HP: {data['hp']}/{data['max_hp']}."
+        listing = ", ".join(
+            it["name"] + (f" x{it['qty']}" if it["qty"] > 1 else "") for it in data["items"]
+        )
+        return f"You're carrying: {listing}. Gold: {data['gold']} · HP: {data['hp']}/{data['max_hp']}."
+
+    return data.get("message", "Done.")  # take / use

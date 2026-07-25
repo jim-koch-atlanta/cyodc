@@ -30,6 +30,12 @@ class Settings(BaseSettings):
         default="./data/checkpoints.sqlite",
         validation_alias="CYODC_CHECKPOINT_DB",
     )
+    # World-state DB (SQLAlchemy) — SEPARATE from the LangGraph checkpoint DB so
+    # our tables never collide with the checkpointer's `checkpoints`/`writes`.
+    database_url: str = Field(
+        default="sqlite:///./data/game.sqlite",
+        validation_alias="CYODC_DATABASE_URL",
+    )
     frontend_origin: str = Field(
         default="http://localhost:5173",
         validation_alias="CYODC_FRONTEND_ORIGIN",

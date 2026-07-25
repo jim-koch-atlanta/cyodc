@@ -1,0 +1,62 @@
+{
+  "theme": "The Processing Levels",
+  "theme_blurb": "Floor One is where VANTABLACK ENTERTAINMENT puts the paperwork. Every wall is stamped INTAKE SECTOR — SEASON 312. The smell is equal parts mildew, printer toner, and quiet desperation.",
+  "rooms": {
+    "entrance": [
+      "A wide antechamber. A faded banner reads WELCOME, CONTESTANT — YOUR INSURANCE WAIVER IS NON-REFUNDABLE. The floor is gritty stone. The air smells like a waiting room that lost hope decades ago.",
+      "The intake hall. Numbered tickets litter the ground; the dispenser on the wall still clicks out number 10,847, though no one is staffing the counter. Somewhere deeper in, a torch flickers. That counts as ambiance. Budget permitting.",
+      "A low-ceilinged corridor disguised as an antechamber. Someone has written WE WERE ALSO OPTIMISTIC across the stone in what you sincerely hope is charcoal. The exit deeper in is propped open with a filing cabinet labeled FATALITIES — MISCELLANEOUS.",
+      "The foyer. Grand once, probably. Now it is mostly rubble arranged in the shape of grandeur, which is almost worse. A single bracket torch lights the space. A laminated sign below it reads DO NOT REMOVE — PROPERTY OF VANTABLACK ENTERTAINMENT, REGION 7."
+    ],
+    "chamber": [
+      "A mid-depth room with high ceilings and the skeletal remains of what was once furniture. File drawers hang open like the mouths of fish. Whatever was stored here was either taken long ago or never worth taking.",
+      "A chamber that smells intensely of sulfur and bureaucracy. The walls are covered in processing codes you do not understand, which is probably fine and definitely not ominous. A water stain on the ceiling looks almost exactly like a screaming face. Almost.",
+      "A square room that echoes. Whatever acoustics VANTABLACK paid for in here, they got their money's worth — your footsteps sound like a standing ovation, which is more applause than most contestants receive. There are crates in the corner. Some of them move slightly. Probably settling.",
+      "A chamber with a low archway at each end. Someone has scratched a tally into the stone near the floor: one hundred and twelve marks, then a final one that trails off into a long, descending groove. You choose not to think about that too hard."
+    ],
+    "treasure": [
+      "A locked room, now unlocked — the mechanism rusted clean through at some point in the last century. Whatever alarm this room was supposed to trigger is long dead. What remains has been here long enough to earn it.",
+      "A supply alcove the dungeon's original staff clearly intended to come back to. They did not come back to it. Their loss. Their very literal, documented, probably-archivable loss.",
+      "A cache room. Shallow and wide, with stone shelves carved directly into the walls. Some shelves are empty. Some are not. The VANTABLACK watermark is stamped on the floor, because of course it is — even the loot rooms are branded.",
+      "A chamber the size of a walk-in closet and twice as interesting. The ceiling is lower than it should be; a tall person would have to duck. You are reminded that the dungeon was not designed with ergonomics in mind. Or perhaps it was, and that is worse."
+    ],
+    "exit": [
+      "The floor's terminal corridor. At the far end, a heavy door banded in iron stands slightly ajar. A placard reads FLOOR TWO — CONTESTANT TRAFFIC ONLY. Below it, in smaller print: VANTABLACK ENTERTAINMENT ASSUMES NO LIABILITY FOR WHATEVER IS DOWN THERE.",
+      "A long descending passage that ends at a staircase. The stairs go down. Of course they do. They have never gone anywhere else and they are not about to start. A draft comes up from below — cold and faintly musical, like an oboe being played inside a refrigerator.",
+      "The passage widens here into a ceremonial landing, as if the dungeon wanted to make a statement about your departure. There is a door. Beyond it, floor two. The Announcer would wish you luck, but the ratings are better when things go badly.",
+      "A narrow exit corridor. The walls press close. The floor slopes gently downward. Ahead, a doorway is lit from below by a bluish light of unknown origin. VANTABLACK calls it 'ambiance.' You might call it something else."
+    ]
+  },
+  "items": [
+    {
+      "slug": "tattered-torch",
+      "name": "Tattered Torch",
+      "flavor_text": "A standard-issue VANTABLACK ENTERTAINMENT branded torch, complete with a safety label warning against using it near flammable materials — which is to say, near anything in the dungeon. It lights the dark, technically. The flame has the confidence of a candidate who knows they didn't prepare.",
+      "effects": {"light": true}
+    },
+    {
+      "slug": "intake-ration",
+      "name": "Intake Ration (Chicken-Adj.)",
+      "flavor_text": "A vacuum-sealed packet from the contestant commissary, stamped BEST BY: SEASON 288. The label assures you it contains 'chicken-adjacent protein concentrate and binding agent.' It tastes like someone described chicken to a food chemist over the phone. You feel better afterward, against your better judgment.",
+      "effects": {"heal": 10}
+    },
+    {
+      "slug": "dungeon-coins",
+      "name": "Fallen Coins",
+      "flavor_text": "A small scatter of brass dungeon-issue currency, denominated in units called Delves. Forty-seven billion viewers just watched you pick change off the floor. The Announcer assures you there is no dignity toll — or rather, it has already been deducted.",
+      "effects": {"gold": 12}
+    },
+    {
+      "slug": "supervisors-memo",
+      "name": "Supervisor's Final Memo",
+      "flavor_text": "A single sheet of vellum, still crisp. It reads: EFFECTIVE IMMEDIATELY, ALL STAFF ARE REMINDED THAT EVACUATION IS A PRIVILEGE, NOT A RIGHT — PLEASE SUBMIT FORM 77-C BEFORE FLEEING. It is signed in a hand that grew less steady toward the bottom. No game effect. But you feel something, and that feeling is free.",
+      "effects": {}
+    },
+    {
+      "slug": "suspicious-pudding",
+      "name": "Suspicious Pudding (Cup)",
+      "flavor_text": "A ceramic cup sealed with wax. Something inside shifts when you tilt it. The label says RESTORATIVE CONFECTION — PROPERTY OF VANTABLACK MEDICAL DIVISION. Medical, you note, not culinary. It heals what ails you with the grim efficiency of something that was never meant to be enjoyable.",
+      "effects": {"heal": 18}
+    }
+  ]
+}

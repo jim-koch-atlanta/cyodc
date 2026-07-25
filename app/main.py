@@ -1,29 +1,41 @@
 """FastAPI app — the HTTP loop around the LangGraph DM.
 
-M1 endpoint contract (this is what the frontend and playtester depend on):
+M2 endpoint contract:
 
     GET  /health                          -> {status, llm_mode}
-    POST /api/session                     -> mint a session, return opening narration
+    POST /api/session                     -> provision a player+level, cold-open
     GET  /api/session/{sid}               -> rehydrate a session's message history
-    POST /api/session/{sid}/turn          -> {message} -> DM reply
+    POST /api/session/{sid}/turn          -> {message} -> DM reply (may call tools)
+    GET  /api/session/{sid}/state         -> world state: stats, room, fog-map, inventory
 
-The `session_id` is a UUID minted here and IS the resume code: the client holds
-it (localStorage), re-submits it to resume. It maps 1:1 to the LangGraph
-`thread_id`, so the checkpointer restores mid-conversation after a reconnect.
+`session_id` (a UUID) is the resume code and equals both the LangGraph thread_id
+and `players.session_id` — the single link between a session and its world state.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
 
 from app.config import get_settings
+from app.db.base import get_db_session, init_db
+from app.db.models import InventoryRow, Item, Player, Visibility
+from app.dungeon import (
+    current_level,
+    current_room,
+    exits_from,
+    load_map,
+    provision_new_player,
+    render_fog_map,
+)
 from app.graph import graph
 from app.llm import message_text
 
@@ -31,7 +43,14 @@ logger = logging.getLogger("cyodc.api")
 
 settings = get_settings()
 
-app = FastAPI(title="CYODC", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()  # create world-state tables if missing (M7 switches to Alembic)
+    yield
+
+
+app = FastAPI(title="CYODC", version="0.2.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,14 +90,28 @@ class TurnResponse(BaseModel):
     llm_mode: str
 
 
+class InventoryEntry(BaseModel):
+    name: str
+    qty: int
+
+
+class StateResponse(BaseModel):
+    hp: int
+    max_hp: int
+    gold: int
+    floor: int
+    pos: list[int]
+    room: str | None
+    exits: list[str]
+    items_here: list[str]
+    inventory: list[InventoryEntry]
+    theme: str
+    map: list[str]
+
+
 # --- helpers ----------------------------------------------------------------
-# Per-session locks serialize turns on the SAME session. Two concurrent
-# invocations on one thread_id would otherwise read the same parent checkpoint
-# and write diverging children — the checkpointer keeps only one branch, so a
-# turn is acknowledged to the client but silently dropped from history. The
-# lock makes read-modify-write atomic per session; different sessions still run
-# fully in parallel. (Endpoints are sync `def`, so Starlette runs them in a
-# threadpool — a threading.Lock is the correct primitive.)
+# Per-session locks serialize turns on one session (BUG-1): concurrent invokes
+# would otherwise fork the checkpoint and silently drop a turn.
 _session_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
@@ -102,9 +135,11 @@ def _serialize(messages: list) -> list[ChatMessage]:
         if isinstance(message, HumanMessage):
             role = "player"
         elif isinstance(message, AIMessage):
+            if not message_text(message).strip():
+                continue  # tool-call-only turns carry no narration to show
             role = "dm"
         else:
-            continue  # never surface system/tool plumbing to the client
+            continue  # ToolMessage / SystemMessage are internal plumbing
         out.append(ChatMessage(role=role, content=message_text(message)))
     return out
 
@@ -114,10 +149,18 @@ def _load_messages(session_id: str) -> list:
     return snapshot.values.get("messages", []) if snapshot.values else []
 
 
+def _item_names(db, slugs: list[str]) -> list[str]:
+    if not slugs:
+        return []
+    rows = db.scalars(select(Item).where(Item.slug.in_(slugs))).all()
+    by_slug = {r.slug: r.name for r in rows}
+    return [by_slug.get(s, s) for s in slugs]
+
+
 # --- endpoints --------------------------------------------------------------
 @app.get("/")
 def root() -> dict:
-    return {"app": "CYODC", "version": "0.1.0", "docs": "/docs"}
+    return {"app": "CYODC", "version": "0.2.0", "docs": "/docs"}
 
 
 @app.get("/health")
@@ -127,14 +170,22 @@ def health() -> dict:
 
 @app.post("/api/session", response_model=SessionResponse)
 def create_session() -> SessionResponse:
-    """Start a new run. Invoking with an empty window makes the DM cold-open."""
+    """Start a run: provision the player + floor 1, then cold-open the DM."""
     session_id = uuid4().hex
+    try:
+        with get_db_session() as db:
+            provision_new_player(db, session_id)
+    except Exception:  # pragma: no cover
+        logger.exception("world provisioning failed on session create")
+        raise HTTPException(status_code=502, detail="The Delve failed to load. Try again.")
+
     config = _thread_config(session_id)
     try:
         result = graph.invoke({"messages": []}, config)
-    except Exception:  # pragma: no cover - surfaced as a clean 502
+    except Exception:  # pragma: no cover
         logger.exception("graph invoke failed on session create")
         raise HTTPException(status_code=502, detail="The Delve is buffering. Try again.")
+
     return SessionResponse(
         session_id=session_id,
         messages=_serialize(result["messages"]),
@@ -157,19 +208,14 @@ def get_session(session_id: str) -> SessionResponse:
 
 @app.post("/api/session/{session_id}/turn", response_model=TurnResponse)
 def take_turn(session_id: str, body: TurnRequest) -> TurnResponse:
-    """Advance one turn. Requires an existing session.
-
-    The existence check and graph invocation run under the session lock so a
-    turn's read-modify-write of the checkpoint can't interleave with another
-    turn on the same session (see BUG-1 / _session_lock).
-    """
+    """Advance one turn. Serialized per session so concurrent turns can't fork history."""
     config = _thread_config(session_id)
     with _session_lock(session_id):
         if not _load_messages(session_id):
             raise HTTPException(status_code=404, detail="No such session. Start a new one.")
         try:
             result = graph.invoke({"messages": [HumanMessage(content=body.message)]}, config)
-        except Exception:  # pragma: no cover - surfaced as a clean 502
+        except Exception:  # pragma: no cover
             logger.exception("graph invoke failed on turn")
             raise HTTPException(status_code=502, detail="The Delve is buffering. Try again.")
 
@@ -178,3 +224,40 @@ def take_turn(session_id: str, body: TurnRequest) -> TurnResponse:
         reply=message_text(result["messages"][-1]),
         llm_mode=settings.resolved_llm_mode,
     )
+
+
+@app.get("/api/session/{session_id}/state", response_model=StateResponse)
+def get_world_state(session_id: str) -> StateResponse:
+    """Current world state for the session: stats, room, fog-of-war map, inventory."""
+    with get_db_session() as db:
+        player = db.scalars(select(Player).where(Player.session_id == session_id)).first()
+        if player is None:
+            raise HTTPException(status_code=404, detail="No such session.")
+
+        level = current_level(db, player)
+        dm = load_map(level)
+        room = current_room(db, level, player.pos_x, player.pos_y)
+        vis = db.scalars(
+            select(Visibility).where(
+                Visibility.player_id == player.id, Visibility.level_id == level.id
+            )
+        ).first()
+        explored = {tuple(cell) for cell in (vis.explored if vis else [])}
+        here_slugs = list(room.contents.get("items", [])) if room else []
+        inv_rows = db.scalars(
+            select(InventoryRow).where(InventoryRow.player_id == player.id)
+        ).all()
+
+        return StateResponse(
+            hp=player.hp,
+            max_hp=player.max_hp,
+            gold=player.gold,
+            floor=player.floor,
+            pos=[player.pos_x, player.pos_y],
+            room=room.kind if room else None,
+            exits=exits_from(dm, player.pos_x, player.pos_y),
+            items_here=_item_names(db, here_slugs),
+            inventory=[InventoryEntry(name=r.item.name, qty=r.qty) for r in inv_rows],
+            theme=level.theme,
+            map=render_fog_map(dm, explored, player.pos_x, player.pos_y),
+        )

@@ -93,6 +93,46 @@ def test_legit_exploration_is_not_deflected():
         assert "legal team" not in reply
 
 
+def test_state_endpoint_returns_world():
+    sid = client.post("/api/session").json()["session_id"]
+    st = client.get(f"/api/session/{sid}/state")
+    assert st.status_code == 200
+    body = st.json()
+    assert body["hp"] == 20 and body["max_hp"] == 20 and body["floor"] == 1
+    assert body["room"] == "entrance"
+    assert body["exits"]  # entrance has walkable exits
+    assert len(body["map"]) > 0
+    assert "Tattered Torch" in body["items_here"]  # seeded in the entrance
+
+
+def test_state_endpoint_unknown_session_is_404():
+    assert client.get("/api/session/nope/state").status_code == 404
+
+
+def test_take_through_the_api_updates_inventory():
+    # HTTP -> graph -> DM tool loop -> take tool -> DB, all in stub mode.
+    sid = client.post("/api/session").json()["session_id"]
+    client.post(f"/api/session/{sid}/turn", json={"message": "take the torch"})
+    st = client.get(f"/api/session/{sid}/state").json()
+    assert "Tattered Torch" in [i["name"] for i in st["inventory"]]
+    assert "Tattered Torch" not in st["items_here"]  # removed from the room
+
+
+def test_move_through_the_api_changes_position():
+    sid = client.post("/api/session").json()["session_id"]
+    st0 = client.get(f"/api/session/{sid}/state").json()
+    client.post(f"/api/session/{sid}/turn", json={"message": f"go {st0['exits'][0]}"})
+    st1 = client.get(f"/api/session/{sid}/state").json()
+    assert st1["pos"] != st0["pos"]
+
+
+def test_inventory_command_narrates_carried_items():
+    sid = client.post("/api/session").json()["session_id"]
+    client.post(f"/api/session/{sid}/turn", json={"message": "take the torch"})
+    reply = client.post(f"/api/session/{sid}/turn", json={"message": "check inventory"}).json()["reply"]
+    assert "Tattered Torch" in reply
+
+
 def test_concurrent_turns_on_one_session_all_persist():
     # BUG-1: parallel turns must not fork the checkpoint and drop history.
     sid = client.post("/api/session").json()["session_id"]
