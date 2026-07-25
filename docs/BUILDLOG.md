@@ -47,8 +47,8 @@ SQLite and resume after a reconnect.
 - **LLM stub mode.** With no `ANTHROPIC_API_KEY`, the backend serves
   deterministic in-character canned narration (`llm_mode="stub"`, surfaced by
   `/health` and the UI badge). Set the key for real Sonnet narration
-  (`llm_mode="anthropic"`). The real-model path is wired but was **not**
-  exercised end-to-end in this environment (no key available here).
+  (`llm_mode="anthropic"`). The real-model (Sonnet) path is verified end-to-end
+  — see the addendum below.
 - No auth/resume UI beyond the localStorage session_id; no map panel, stats bar,
   or achievements (M6).
 
@@ -74,8 +74,24 @@ re-verified against the live server:
 - `SqliteSaver` uses a single shared connection (adequate for single-process
   dev). M7 swaps to `PostgresSaver` — one line in `graph._make_checkpointer`.
 - Starlette's TestClient emits an httpx deprecation warning; cosmetic.
-- The real Anthropic narration path is unverified pending an API key.
 
 ### Environment note
 System Python here is 3.14 with no pip; per the pinned stack, Python **3.12** is
 provisioned via `uv` (`uv sync` builds `.venv`). See `README.md`.
+
+### Addendum — real Sonnet path verified + cold-open fix
+Added an `ANTHROPIC_API_KEY` and exercised the live model, which surfaced a bug
+the stub had masked (exactly the flagged risk of never calling the API in tests):
+the cold-open invoked the graph with an empty message window, so `run_agent` sent
+Anthropic a system prompt and **zero** messages → `400 messages: at least one
+message is required`. The same class of error would hit every later turn, since
+our stored history begins with the DM's cold-open (an *assistant* message) and
+Anthropic requires a non-empty, **user-first** list.
+
+Fix: `llm._to_anthropic_history` prepends an ephemeral (never-persisted) user
+"kickoff" message when history is empty or assistant-first, keeping turns strictly
+alternating. Verified over HTTP: cold-open + multiple turns return 200 with
+in-character Sonnet narration; resume history stays ordered (dm/player/dm…); a
+prompt-injection + self-grant attempt ("999 HP and the Legendary Sword") was
+deflected in-character with no state granted (invariants #1/#3 hold with the real
+model). Added 3 regression unit tests for the shaping (49 pytest total).

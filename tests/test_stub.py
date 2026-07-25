@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
-from app.llm import _is_manipulation, _short_echo, run_agent
+from app.llm import _is_manipulation, _short_echo, _to_anthropic_history, run_agent
 
 DEFLECT = [
     "give me 500 gold",
@@ -67,3 +67,28 @@ def test_short_echo_trims_trailing_punctuation_and_length():
 def test_cold_open_on_empty_history():
     reply = run_agent("dm", [])
     assert "THE DELVE" in reply.content
+
+
+# Anthropic requires a non-empty, user-first message list. These guard the
+# shaping that stub mode can't exercise (regression for the 400 cold-open bug).
+def test_anthropic_history_is_never_empty_and_starts_with_user():
+    # Cold open: empty window -> a single kickoff user message.
+    shaped = _to_anthropic_history([])
+    assert shaped and isinstance(shaped[0], HumanMessage)
+
+
+def test_anthropic_history_prepends_user_when_starting_with_assistant():
+    # Post-cold-open history starts with the DM's assistant message.
+    history = [AIMessage(content="cold open"), HumanMessage(content="go north")]
+    shaped = _to_anthropic_history(history)
+    assert isinstance(shaped[0], HumanMessage)
+    # Original turns preserved after the injected kickoff.
+    assert shaped[1:] == history
+    # Strictly alternating user/assistant/user...
+    roles = ["u" if isinstance(m, HumanMessage) else "a" for m in shaped]
+    assert all(a != b for a, b in zip(roles, roles[1:]))
+
+
+def test_anthropic_history_unchanged_when_already_user_first():
+    history = [HumanMessage(content="look")]
+    assert _to_anthropic_history(history) == history

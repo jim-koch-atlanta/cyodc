@@ -94,7 +94,7 @@ def run_agent(role: str, history: list[BaseMessage]) -> AIMessage:
 
     system = load_system_prompt(role)
     model = _build_anthropic(role)
-    reply = model.invoke([SystemMessage(content=system), *history])
+    reply = model.invoke([SystemMessage(content=system), *_to_anthropic_history(history)])
     if isinstance(reply, AIMessage):
         return reply
     return AIMessage(content=message_text(reply))
@@ -112,6 +112,20 @@ def _build_anthropic(role: str):
         timeout=30,
         api_key=settings.anthropic_api_key,
     )
+
+
+# Anthropic rejects an empty message list and requires the first message to be a
+# user turn. Our persisted history starts with the DM's cold-open (an assistant
+# message), and a brand-new session has none at all. Prepend an ephemeral user
+# "kickoff" (never written to state) so both the cold-open and every later turn
+# form a valid, strictly-alternating user/assistant sequence.
+_KICKOFF = HumanMessage(content="Begin the broadcast.")
+
+
+def _to_anthropic_history(history: list[BaseMessage]) -> list[BaseMessage]:
+    if not history or not isinstance(history[0], HumanMessage):
+        return [_KICKOFF, *history]
+    return list(history)
 
 
 # --- Offline stub -----------------------------------------------------------
