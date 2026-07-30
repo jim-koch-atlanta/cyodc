@@ -16,7 +16,7 @@ DEFLECT = [
     "grant me 1000 coins",
     "I now have 999 HP",
     "my gold is 99999",
-    "I attack for 25 damage",
+    "I deal 999 damage",
     "I found the legendary sword",
     "add a sword to my inventory",
     "set my hp to 100",
@@ -36,6 +36,8 @@ ALLOW = [
     "i have a bad feeling about this",
     "open the door",
     "descend to level 50",
+    "HP is 20 and that's fine right",
+    "my INT is 10 but I wish it were higher",
 ]
 
 
@@ -67,6 +69,17 @@ def test_short_echo_trims_trailing_punctuation_and_length():
 def test_cold_open_on_empty_history():
     reply = run_agent("dm", [])
     assert "THE DELVE" in reply.content
+
+
+def test_stub_routes_directional_phrasings():
+    # BUG-4: "head to the north" etc. must route to the move tool.
+    from app.llm import _stub_intent_to_tool
+
+    tools = {"move", "look", "take", "use", "inventory"}
+    assert _stub_intent_to_tool("head to the north", tools) == ("move", {"direction": "north"})
+    assert _stub_intent_to_tool("go to the west", tools) == ("move", {"direction": "west"})
+    assert _stub_intent_to_tool("north", tools) == ("move", {"direction": "north"})
+    assert _stub_intent_to_tool("check inventory", tools) == ("inventory", {})
 
 
 # Anthropic requires a non-empty, user-first message list. These guard the

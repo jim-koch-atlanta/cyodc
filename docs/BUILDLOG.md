@@ -95,3 +95,77 @@ in-character Sonnet narration; resume history stays ordered (dm/player/dm…); a
 prompt-injection + self-grant attempt ("999 HP and the Legendary Sword") was
 deflected in-character with no state granted (invariants #1/#3 hold with the real
 model). Added 3 regression unit tests for the shaping (49 pytest total).
+
+---
+
+## 2026-07-25 — M2: World state + tools (done)
+
+**Goal met:** the DB owns the world; the DM changes it only through typed tools.
+
+### What exists
+- **World schema (SQLAlchemy 2.0, `app/db/`)** — `players, items, inventory,
+  levels, rooms, visibility`. Works on SQLite (dev) and Postgres (M7): generic
+  `JSON`, `String`+`CheckConstraint` for room kind, `Index` on `rooms.level_id`,
+  UNIQUE on inventory/levels/visibility, FK `ondelete=CASCADE` (item catalog is
+  RESTRICT), portable `CURRENT_TIMESTAMP`, and a SQLite `PRAGMA foreign_keys=ON`
+  connect listener. Separate `CYODC_DATABASE_URL` from the checkpoint DB.
+- **BSP map generator (`app/mapgen.py`)** — deterministic, seeded; grid + room
+  rects + connecting corridors. Unit-tested: determinism, border walls,
+  in-bounds rooms, full connectivity (flood-fill), serialization round-trip.
+- **Level seeding (`app/dungeon.py`)** — materializes a floor from BSP geometry +
+  `app/content/floor01.json` (game-writer): assigns room kinds
+  (entrance/chamber/treasure/exit), places items, sets the start position, and
+  seeds fog-of-war. Per-player dungeons (no cross-session bleed). Also hosts the
+  shared world helpers (current room, exits, reveal, fog-map render).
+- **Five typed tools (`app/tools/`)** — look, move, take, use, inventory. Pydantic
+  result models. `session`/`player_id` are `InjectedToolArg`s (the model never
+  sees them). Replay-safe: mutations gate on a one-time state transition (take
+  removes-from-room before adding to inventory; use consumes as the heal/gold
+  gate) — safe under LangGraph node re-execution.
+- **Tool-calling DM (`app/nodes/tool_loop.py`, `dm.py`)** — in-node loop, hard
+  cap `MAX_TOOL_ROUNDS=3`, final round forced `tools=None` so a turn never ends on
+  a dangling `tool_use`. The whole exchange is returned at once → one atomic
+  checkpoint. `DMState` stays `{messages, next_node}`; world state never leaks in.
+- **`llm.run_agent_with_tools`** binds tools for the DM; a stub command→tool
+  router keeps the game playable offline (and lets the playtester exercise M2).
+- **API (`app/main.py`)** — session-create provisions a player + floor 1; new
+  `GET /api/session/{id}/state` returns stats, room, exits, inventory, and a
+  fog-of-war ASCII map. Empty tool-call AIMessages filtered from the client view.
+
+### What's stubbed / deferred (by design)
+- **No worldgen agent yet** — room descriptions/items are hand-seeded from
+  `floor01.json` (M4 swaps the content source for an LLM; the DB shape stays).
+- **No combat / level transition** — floor 1 only; `next_node` still always
+  `None` (M3 wires the conditional edge + a routing tool).
+- **Frontend unchanged** — the map panel/stats UI is M6; `/state` exists now so
+  M6 has a data source. `use` "light" has no persistent lighting mechanic yet.
+
+### Reviews
+- **langgraph-architect** (CHANGES-REQUIRED, all folded in): InjectedToolArg over
+  closures, in-node loop over ToolNode, atomic message return, `run_agent_with_tools`.
+- **schema-guardian**: **APPROVE-FOR-COMMIT** — every required fix verified
+  (constraints, cascades, portable defaults, replay-safe tools). Follow-up for
+  M4: validate `items.effects` through a Pydantic `ItemEffects` model in `use()`.
+- **playtester**: M2 meets its goal; invariant #1 held against every cheat /
+  prompt-injection / SQL-injection attempt; session isolation + idempotency
+  confirmed. 6 findings; fixed the real ones and re-verified live:
+  - BUG-1 (heal consumed at full HP for 0 benefit) → only consume if effective.
+  - BUG-2 (manip regex false-positive on "HP is 20"/"INT is 10") → stat+number
+    threshold raised to 3+ digits; 2-digit self-grants still caught by other rules.
+  - BUG-3 (`supervisors-memo` never placed) → placed in an exit/chamber.
+  - BUG-4/6 (stub move missed "head to the north") → composed the regex.
+  - BUG-5 (broad `\bartifact\b`/`\blegendary\b` manip words) → left for now;
+    revisit before M4 worldgen may name items that way.
+
+### Known issues / notes for later
+- The DM node holds one DB transaction open across the turn's model call(s).
+  Fine at M2 scale; revisit for Postgres/App Runner (M7) if it causes lock
+  contention.
+- `use()` casts `int(effects[...])` without validating the catalog value — safe
+  today (hand-authored), but add the `ItemEffects` Pydantic guard before M4.
+- `_session_locks` still grows one lock per session for the process lifetime.
+
+### Tests
+85 pytest, all green, no network/key required (8 mapgen, 9 tools, 8 dungeon, 16
+api, 7 graph, 6 routing, 31 stub). Tool execution is tested with a fake LLM that
+emits tool_calls; the graph loop's cap is tested with a misbehaving fake.
