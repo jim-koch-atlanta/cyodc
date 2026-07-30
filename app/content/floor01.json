@@ -58,5 +58,51 @@
       "flavor_text": "A ceramic cup sealed with wax. Something inside shifts when you tilt it. The label says RESTORATIVE CONFECTION — PROPERTY OF VANTABLACK MEDICAL DIVISION. Medical, you note, not culinary. It heals what ails you with the grim efficiency of something that was never meant to be enjoyable.",
       "effects": {"heal": 18}
     }
+  ],
+  "monsters": [
+    {
+      "slug": "form-filler",
+      "name": "Form-Filler",
+      "flavor": "A shambling heap of animated bureaucratic detritus — clipboards, carbon-copy triplicates, a rubber stamp where its face should be. It does not want to fight you. It wants to process you, which is worse. VANTABLACK ENTERTAINMENT classifies it as 'entry-level workforce, reanimated.'",
+      "hp": 7,
+      "ac": 10,
+      "attack_bonus": 1,
+      "damage_dice": "1d4",
+      "xp": 8,
+      "gold": 3
+    },
+    {
+      "slug": "intake-drone",
+      "name": "Intake Drone",
+      "flavor": "A chest-high mechanical unit built to shepherd contestants through orientation — back when orientation was a thing. Its speaker grille still loops a corrupted welcome message at frequencies that make your teeth ache. Union-certified to use moderate force. It has been using it ever since.",
+      "hp": 11,
+      "ac": 12,
+      "attack_bonus": 3,
+      "damage_dice": "1d6",
+      "xp": 15,
+      "gold": 6
+    },
+    {
+      "slug": "filing-specter",
+      "name": "Filing Specter",
+      "flavor": "The ghost of an administrative assistant who never finished the quarterly report. It flickers in and out of visibility, trailing ectoplasmic spreadsheets. It is deeply unhappy. It was deeply unhappy when it was alive. At least now it has an excuse.",
+      "hp": 6,
+      "ac": 9,
+      "attack_bonus": 2,
+      "damage_dice": "1d6",
+      "xp": 10,
+      "gold": 0
+    },
+    {
+      "slug": "shift-supervisor",
+      "name": "Shift Supervisor",
+      "flavor": "Six feet of middle-management in a high-visibility safety vest that has never seen a safe situation. It carries a laminated badge, a performance review clipboard, and a disposition best described as 'aggressively unsatisfied.' It has been waiting for someone to supervise. You are someone.",
+      "hp": 14,
+      "ac": 13,
+      "attack_bonus": 4,
+      "damage_dice": "1d6+2",
+      "xp": 25,
+      "gold": 15
+    }
   ]
 }

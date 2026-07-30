@@ -15,6 +15,7 @@ class LookResult(BaseModel):
     description: str
     exits: list[str]
     items_here: list[str]
+    monsters_here: list[str] = []
 
 
 class MoveResult(BaseModel):
@@ -24,6 +25,14 @@ class MoveResult(BaseModel):
     description: str | None = None
     exits: list[str] = []
     items_here: list[str] = []
+    monsters_here: list[str] = []
+
+
+class CombatStartResult(BaseModel):
+    ok: bool
+    message: str
+    combat_started: bool = False
+    monster: str | None = None
 
 
 class TakeResult(BaseModel):
