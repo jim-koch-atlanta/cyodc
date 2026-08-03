@@ -118,6 +118,7 @@ class StateResponse(BaseModel):
     theme: str
     map: list[str]
     combat: CombatState | None = None
+    can_descend: bool = False
 
 
 # --- helpers ----------------------------------------------------------------
@@ -256,7 +257,7 @@ def get_world_state(session_id: str) -> StateResponse:
         explored = {tuple(cell) for cell in (vis.explored if vis else [])}
         here_slugs = list(room.contents.get("items", [])) if room else []
         monster_slugs = list(room.contents.get("monsters", [])) if room else []
-        catalog = load_monster_catalog(player.floor)
+        catalog = load_monster_catalog(player.floor, level.monster_catalog)
         inv_rows = db.scalars(
             select(InventoryRow).where(InventoryRow.player_id == player.id)
         ).all()
@@ -287,4 +288,10 @@ def get_world_state(session_id: str) -> StateResponse:
             theme=level.theme,
             map=render_fog_map(dm, explored, player.pos_x, player.pos_y),
             combat=combat,
+            can_descend=(
+                room is not None
+                and room.kind == "exit"
+                and enc is None
+                and not room.contents.get("monsters")  # a guard blocks the stairs
+            ),
         )

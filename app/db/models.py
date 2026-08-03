@@ -73,12 +73,19 @@ class Player(Base):
 
 class Item(Base):
     __tablename__ = "items"
+    __table_args__ = (Index("ix_items_player_id", "player_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     flavor_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     effects: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    # NULL = shared hand-seeded catalog (RESTRICT-protected). Non-NULL = a
+    # worldgen-generated item owned by that player; cascades on player delete
+    # (so generated items don't accumulate forever).
+    player_id: Mapped[int | None] = mapped_column(
+        ForeignKey("players.id", ondelete="CASCADE"), nullable=True, default=None
+    )
 
 
 class InventoryRow(Base):
@@ -106,6 +113,7 @@ class Level(Base):
     __tablename__ = "levels"
     __table_args__ = (
         UniqueConstraint("player_id", "floor", name="uq_levels_player_floor"),
+        Index("ix_levels_player_floor", "player_id", "floor"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -118,6 +126,11 @@ class Level(Base):
     seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
     theme: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     grid: Mapped[dict] = mapped_column(JSON, nullable=False)  # DungeonMap.to_dict()
+    # NULL for hand-seeded floor 1; {slug: monster_def} for worldgen floors (2+),
+    # so combat can resolve monster stats on any floor without a static file.
+    monster_catalog: Mapped[dict | None] = mapped_column(
+        JSONDict, nullable=True, default=None
+    )
 
     rooms: Mapped[list["Room"]] = relationship(
         back_populates="level", cascade="all, delete-orphan"
@@ -154,6 +167,7 @@ class Visibility(Base):
     __tablename__ = "visibility"
     __table_args__ = (
         UniqueConstraint("player_id", "level_id", name="uq_visibility_player_level"),
+        Index("ix_visibility_player_level", "player_id", "level_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

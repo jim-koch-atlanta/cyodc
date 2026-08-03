@@ -84,8 +84,11 @@ def load_floor_content(floor: int) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_monster_catalog(floor: int) -> dict[str, dict]:
-    """slug -> monster definition, for the given floor."""
+def load_monster_catalog(floor: int, catalog_override: dict | None = None) -> dict[str, dict]:
+    """slug -> monster definition. Worldgen floors (2+) have no static content
+    file, so their catalog is stored on the level — pass it as catalog_override."""
+    if catalog_override is not None:
+        return catalog_override
     return {m["slug"]: m for m in load_floor_content(floor).get("monsters", [])}
 
 
@@ -306,3 +309,60 @@ def render_fog_map(
                 chars.append(" ")
         rows.append("".join(chars))
     return rows
+
+
+def _ensure_item(session: Session, player: Player, idef: dict) -> Item:
+    """Insert-or-get a generated item by slug. Existing (global or prior) rows are
+    reused; new ones are scoped to the player so they cascade on delete."""
+    existing = session.scalars(select(Item).where(Item.slug == idef["slug"])).first()
+    if existing is not None:
+        return existing
+    item = Item(
+        slug=idef["slug"],
+        name=idef.get("name", "Oddment"),
+        flavor_text=idef.get("flavor_text", ""),
+        effects=idef.get("effects", {}),
+        player_id=player.id,
+    )
+    session.add(item)
+    session.flush()
+    return item
+
+
+def materialize_generated_level(
+    session: Session, player: Player, floor: int, dm: DungeonMap, kinds: dict[int, str], content
+) -> Level:
+    """Write a worldgen-decorated level: Level (+ monster_catalog + theme), Rooms
+    (descriptions + placements), and any generated Items. Geometry is the given
+    deterministic BSP; only the decoration comes from `content` (a FloorContent)."""
+    level = Level(
+        player_id=player.id,
+        floor=floor,
+        seed=_level_seed(player.session_id, floor),
+        theme=content.theme,
+        grid=dm.to_dict(),
+        monster_catalog=content.monster_catalog or None,
+    )
+    session.add(level)
+    session.flush()
+
+    for idx, rect in enumerate(dm.rooms):
+        item_slugs: list[str] = []
+        for idef in content.item_defs.get(idx, []):
+            _ensure_item(session, player, idef)
+            item_slugs.append(idef["slug"])
+        session.add(
+            Room(
+                level_id=level.id,
+                x=rect.x, y=rect.y, w=rect.w, h=rect.h,
+                kind=kinds[idx],
+                description=content.descriptions.get(idx, ""),
+                contents={
+                    "items": item_slugs,
+                    "monsters": list(content.monster_slugs.get(idx, [])),
+                    "npc": None,
+                },
+            )
+        )
+    session.flush()
+    return level

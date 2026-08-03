@@ -77,10 +77,16 @@ def _encounter_seed(session_id: str, floor: int, x: int, y: int, slug: str) -> i
     return int.from_bytes(digest[:6], "big")  # 48-bit, fits BigInteger
 
 
-def start_encounter(session: Session, player: Player, monster_slug: str) -> Encounter:
+def start_encounter(
+    session: Session, player: Player, monster_slug: str, catalog: dict | None = None
+) -> Encounter:
     """Create the active encounter (snapshot + rolled initiative). Caller must
     have already validated the monster is present and cleared it from the room."""
-    mdef = load_monster_catalog(player.floor)[monster_slug]  # KeyError => caller bug
+    if catalog is None:
+        catalog = load_monster_catalog(
+            player.floor, current_level(session, player).monster_catalog
+        )
+    mdef = catalog[monster_slug]  # KeyError => caller bug
     snapshot = {k: mdef[k] for k in _MONSTER_SNAPSHOT_KEYS if k in mdef}
     snapshot["max_hp"] = mdef["hp"]
 

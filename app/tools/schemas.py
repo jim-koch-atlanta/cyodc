@@ -35,6 +35,12 @@ class CombatStartResult(BaseModel):
     monster: str | None = None
 
 
+class DescendResult(BaseModel):
+    ok: bool
+    message: str
+    transition: bool = False
+
+
 class TakeResult(BaseModel):
     ok: bool
     message: str
