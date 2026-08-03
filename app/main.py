@@ -33,9 +33,11 @@ from app.dungeon import (
     current_room,
     exits_from,
     load_map,
+    load_monster_catalog,
     provision_new_player,
     render_fog_map,
 )
+from app.encounters import active_encounter
 from app.graph import graph
 from app.llm import message_text
 
@@ -95,6 +97,13 @@ class InventoryEntry(BaseModel):
     qty: int
 
 
+class CombatState(BaseModel):
+    monster: str
+    monster_hp: int
+    monster_max_hp: int
+    round: int
+
+
 class StateResponse(BaseModel):
     hp: int
     max_hp: int
@@ -104,9 +113,11 @@ class StateResponse(BaseModel):
     room: str | None
     exits: list[str]
     items_here: list[str]
+    monsters_here: list[str]
     inventory: list[InventoryEntry]
     theme: str
     map: list[str]
+    combat: CombatState | None = None
 
 
 # --- helpers ----------------------------------------------------------------
@@ -244,9 +255,23 @@ def get_world_state(session_id: str) -> StateResponse:
         ).first()
         explored = {tuple(cell) for cell in (vis.explored if vis else [])}
         here_slugs = list(room.contents.get("items", [])) if room else []
+        monster_slugs = list(room.contents.get("monsters", [])) if room else []
+        catalog = load_monster_catalog(player.floor)
         inv_rows = db.scalars(
             select(InventoryRow).where(InventoryRow.player_id == player.id)
         ).all()
+
+        enc = active_encounter(db, player.id)
+        combat = (
+            CombatState(
+                monster=enc.monster["name"],
+                monster_hp=enc.monster_hp,
+                monster_max_hp=enc.monster["max_hp"],
+                round=enc.round,
+            )
+            if enc is not None
+            else None
+        )
 
         return StateResponse(
             hp=player.hp,
@@ -257,7 +282,9 @@ def get_world_state(session_id: str) -> StateResponse:
             room=room.kind if room else None,
             exits=exits_from(dm, player.pos_x, player.pos_y),
             items_here=_item_names(db, here_slugs),
+            monsters_here=[catalog[s]["name"] if s in catalog else s for s in monster_slugs],
             inventory=[InventoryEntry(name=r.item.name, qty=r.qty) for r in inv_rows],
             theme=level.theme,
             map=render_fog_map(dm, explored, player.pos_x, player.pos_y),
+            combat=combat,
         )

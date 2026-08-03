@@ -25,10 +25,13 @@ from app.dungeon import (
     current_room,
     exits_from,
     load_map,
+    load_monster_catalog,
     normalize_direction,
     reveal,
 )
+from app.encounters import start_encounter
 from app.tools.schemas import (
+    CombatStartResult,
     InventoryResult,
     InvItem,
     LookResult,
@@ -69,12 +72,32 @@ def _match_slug(query: str, pairs: list[tuple[str, str]]) -> str | None:
 def _describe(session, level, dm, x, y):
     room = current_room(session, level, x, y)
     slugs = list(room.contents.get("items", [])) if room else []
+    monster_slugs = list(room.contents.get("monsters", [])) if room else []
+    catalog = load_monster_catalog(level.floor)
+    monsters = [catalog[s]["name"] if s in catalog else s for s in monster_slugs]
     return (
         room.kind if room else "corridor",
         room.description if room else _CORRIDOR_DESC,
         exits_from(dm, x, y),
         _item_names(session, slugs),
+        monsters,
     )
+
+
+def _match_monster(target: str, slugs: list[str], catalog: dict) -> str | None:
+    if not (target or "").strip():
+        return slugs[0]  # only one to fight, usually
+    q = " ".join(target.lower().split())
+    for slug in slugs:
+        name = catalog.get(slug, {}).get("name", slug).lower()
+        if q == slug or slug in q or q in name or name in q or slug.replace("-", " ") in q:
+            return slug
+    q_tokens = set(q.split()) - _STOPWORDS
+    for slug in slugs:
+        name = catalog.get(slug, {}).get("name", slug).lower()
+        if q_tokens & (set(name.split()) | set(slug.split("-"))):
+            return slug
+    return None
 
 
 @tool
@@ -89,8 +112,10 @@ def look(
     dm = load_map(level)
     vis = _visibility(session, player_id, level.id)
     reveal(session, vis, dm, player.pos_x, player.pos_y)
-    kind, desc, exits, items = _describe(session, level, dm, player.pos_x, player.pos_y)
-    return LookResult(room=kind, description=desc, exits=exits, items_here=items).model_dump_json()
+    kind, desc, exits, items, monsters = _describe(session, level, dm, player.pos_x, player.pos_y)
+    return LookResult(
+        room=kind, description=desc, exits=exits, items_here=items, monsters_here=monsters
+    ).model_dump_json()
 
 
 @tool
@@ -117,9 +142,10 @@ def move(
     player.pos_x, player.pos_y = nx, ny
     vis = _visibility(session, player_id, level.id)
     reveal(session, vis, dm, nx, ny)
-    kind, desc, exits, items = _describe(session, level, dm, nx, ny)
+    kind, desc, exits, items, monsters = _describe(session, level, dm, nx, ny)
     return MoveResult(
-        ok=True, message=f"You move {d}.", room=kind, description=desc, exits=exits, items_here=items
+        ok=True, message=f"You move {d}.", room=kind, description=desc,
+        exits=exits, items_here=items, monsters_here=monsters,
     ).model_dump_json()
 
 
@@ -250,5 +276,42 @@ def _visibility(session: Session, player_id: int, level_id: int):
     return vis
 
 
-DM_TOOLS = [look, move, take, use, inventory]
+@tool
+def start_combat(
+    target: str = "",
+    *,
+    session: Annotated[Session, InjectedToolArg],
+    player_id: Annotated[int, InjectedToolArg],
+) -> str:
+    """Begin a fight with a monster in your current room. Pass the monster's name (blank if only one is present)."""
+    player = session.get(Player, player_id)
+    level = current_level(session, player)
+    room = current_room(session, level, player.pos_x, player.pos_y)
+    monster_slugs = list(room.contents.get("monsters", [])) if room else []
+    if not monster_slugs:
+        return CombatStartResult(ok=False, message="There is nothing here to fight.").model_dump_json()
+
+    catalog = load_monster_catalog(player.floor)
+    slug = _match_monster(target, monster_slugs, catalog)
+    if slug is None:
+        return CombatStartResult(
+            ok=False, message=f'You don\'t see any "{target}" to fight here.'
+        ).model_dump_json()
+
+    # Gate (replay-safety): remove the monster from the room atomically with
+    # creating the encounter, so a replay finds nothing to fight and no-ops.
+    remaining = list(monster_slugs)
+    remaining.remove(slug)
+    room.contents["monsters"] = remaining
+    encounter = start_encounter(session, player, slug)
+    name = encounter.monster["name"]
+    return CombatStartResult(
+        ok=True,
+        combat_started=True,
+        monster=name,
+        message=f"You square off against the {name}. Forty-seven billion viewers lean in.",
+    ).model_dump_json()
+
+
+DM_TOOLS = [look, move, take, use, inventory, start_combat]
 TOOLS_BY_NAME = {t.name: t for t in DM_TOOLS}

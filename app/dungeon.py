@@ -27,7 +27,9 @@ from app.mapgen import DungeonMap, generate
 
 CONTENT_DIR = Path(__file__).parent / "content"
 
-DEFAULT_STATS = {"STR": 10, "DEX": 10, "CON": 10, "INT": 10, "WIS": 10, "CHA": 10}
+# Modifiers (D&D-style (score-10)//2) give the starting Crawler a fighting
+# chance: DEX 14 -> AC 12, STR 13 -> +1 to hit/damage. See encounters.player_combatant.
+DEFAULT_STATS = {"STR": 13, "DEX": 14, "CON": 12, "INT": 10, "WIS": 10, "CHA": 10}
 
 DIRECTIONS: dict[str, tuple[int, int]] = {
     "north": (0, -1),
@@ -39,6 +41,29 @@ _DIR_ALIASES = {
     "n": "north", "s": "south", "e": "east", "w": "west",
     "up": "north", "down": "south", "left": "west", "right": "east",
 }
+
+
+_MATCH_STOPWORDS = {"the", "a", "an", "of", "my", "some", "that", "this"}
+
+
+def match_slug(query: str, pairs: list[tuple[str, str]]) -> str | None:
+    """Fuzzily map a player's phrase to one of (slug, name) candidates.
+
+    Shared by the item tools and combat so matching behaves identically in and
+    out of a fight (e.g. "use the pudding" works in both).
+    """
+    q = " ".join((query or "").lower().split())
+    if not q:
+        return None
+    for slug, name in pairs:
+        n = name.lower()
+        if q == slug or slug in q or q in n or n in q or slug.replace("-", " ") in q:
+            return slug
+    q_tokens = set(q.split()) - _MATCH_STOPWORDS
+    for slug, name in pairs:
+        if q_tokens & (set(name.lower().split()) | set(slug.split("-"))):
+            return slug
+    return None
 
 
 def normalize_direction(raw: str) -> str:
@@ -57,6 +82,17 @@ def load_floor_content(floor: int) -> dict:
     if not path.exists():
         path = CONTENT_DIR / "floor01.json"
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_monster_catalog(floor: int) -> dict[str, dict]:
+    """slug -> monster definition, for the given floor."""
+    return {m["slug"]: m for m in load_floor_content(floor).get("monsters", [])}
+
+
+def monster_names_in_room(catalog: dict[str, dict], room: Room | None) -> list[str]:
+    if room is None:
+        return []
+    return [catalog[s]["name"] if s in catalog else s for s in room.contents.get("monsters", [])]
 
 
 def _level_seed(session_id: str, floor: int) -> int:
@@ -178,7 +214,25 @@ def build_level(session: Session, player: Player, floor: int) -> Level:
         )
     session.flush()
     _place_items(session, level, rng)
+    _place_monsters(session, level, rng)
     return level
+
+
+def _place_monsters(session: Session, level: Level, rng: Random) -> None:
+    """Put monsters in non-entrance rooms (the exit is always guarded). Every
+    placed slug is validated against the catalog here, not at combat start."""
+    catalog = load_monster_catalog(level.floor)
+    slugs = sorted(catalog)
+    if not slugs:
+        return
+    for room in session.scalars(select(Room).where(Room.level_id == level.id)).all():
+        if room.kind == "entrance":
+            continue  # keep the spawn room safe
+        if room.kind == "exit" or rng.random() < 0.5:
+            slug = rng.choice(slugs)
+            assert slug in catalog, f"monster slug {slug!r} not in catalog"
+            room.contents["monsters"] = list(room.contents.get("monsters", [])) + [slug]
+    session.flush()
 
 
 def _place_items(session: Session, level: Level, rng: Random) -> None:

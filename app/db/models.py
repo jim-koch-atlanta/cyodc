@@ -18,6 +18,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -64,6 +65,10 @@ class Player(Base):
     inventory: Mapped[list["InventoryRow"]] = relationship(
         back_populates="player", cascade="all, delete-orphan"
     )
+    # At most one active fight per player (UNIQUE on encounters.player_id).
+    encounter: Mapped["Encounter | None"] = relationship(
+        back_populates="player", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class Item(Base):
@@ -108,7 +113,9 @@ class Level(Base):
         ForeignKey("players.id", ondelete="CASCADE"), nullable=False
     )
     floor: Mapped[int] = mapped_column(Integer, nullable=False)
-    seed: Mapped[int] = mapped_column(Integer, nullable=False)
+    # BigInteger: _level_seed() takes 4 bytes of a SHA-256 digest (up to
+    # 0xFFFFFFFF), which overflows Postgres INTEGER (signed 32-bit).
+    seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
     theme: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     grid: Mapped[dict] = mapped_column(JSON, nullable=False)  # DungeonMap.to_dict()
 
@@ -157,3 +164,33 @@ class Visibility(Base):
         ForeignKey("levels.id", ondelete="CASCADE"), nullable=False
     )
     explored: Mapped[list] = mapped_column(JSONList, nullable=False, default=list)
+
+
+class Encounter(Base):
+    """Active combat state. The row exists iff a fight is in progress; it is
+    deleted (atomically with awarding rewards) when the fight ends — which is
+    also the replay gate that keeps victory rewards from double-applying."""
+
+    __tablename__ = "encounters"
+    __table_args__ = (
+        UniqueConstraint("player_id", name="uq_encounters_player"),
+        Index("ix_encounters_player_id", "player_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    player_id: Mapped[int] = mapped_column(
+        ForeignKey("players.id", ondelete="CASCADE"), nullable=False
+    )
+    # Snapshot of the catalog entry at combat start:
+    # {slug, name, max_hp, ac, attack_bonus, damage_dice, xp, gold}
+    monster: Mapped[dict] = mapped_column(JSON, nullable=False)
+    monster_hp: Mapped[int] = mapped_column(Integer, nullable=False)
+    round: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Per-round dice derive from (seed, round) — reproducible across a disconnect.
+    seed: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    turn_order: Mapped[list] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP"), nullable=False
+    )
+
+    player: Mapped["Player"] = relationship(back_populates="encounter")

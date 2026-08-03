@@ -87,6 +87,28 @@ def test_all_seeded_items_are_placed(session):
     assert "tattered-torch" in placed
 
 
+def test_monsters_are_seeded_and_the_exit_is_guarded(session):
+    p = provision_new_player(session, "sess-monsters")
+    level = current_level(session, p)
+    from app.dungeon import load_monster_catalog
+
+    catalog = load_monster_catalog(level.floor)
+    placed: list[str] = []
+    exit_room = None
+    for room in session.scalars(select(Room).where(Room.level_id == level.id)).all():
+        placed += room.contents.get("monsters", [])
+        if room.kind == "exit":
+            exit_room = room
+    assert placed, "at least one monster placed"
+    assert all(slug in catalog for slug in placed)  # validated against catalog
+    assert exit_room is not None and exit_room.contents.get("monsters")  # exit guarded
+    # the entrance stays safe
+    entrance = session.scalars(
+        select(Room).where(Room.level_id == level.id, Room.kind == "entrance")
+    ).one()
+    assert not entrance.contents.get("monsters")
+
+
 def test_two_players_get_independent_dungeons(session):
     a = provision_new_player(session, "sess-a")
     b = provision_new_player(session, "sess-b")

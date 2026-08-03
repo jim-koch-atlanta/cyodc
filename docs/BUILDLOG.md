@@ -169,3 +169,81 @@ model). Added 3 regression unit tests for the shaping (49 pytest total).
 85 pytest, all green, no network/key required (8 mapgen, 9 tools, 8 dungeon, 16
 api, 7 graph, 6 routing, 31 stub). Tool execution is tested with a fake LLM that
 emits tool_calls; the graph loop's cap is tested with a misbehaving fake.
+
+---
+
+## 2026-07-25 — M3: Combat (done)
+
+**Goal met:** a deterministic combat engine owns the math; a fight survives a
+disconnect; the DM routes into and out of combat.
+
+### What exists
+- **Combat engine (`app/combat.py`)** — pure, seeded Python: dice parsing,
+  initiative, to-hit (d20+bonus vs AC), damage, nat-20 crit, nat-1 miss, flee.
+  Per-round dice derive from `(seed, round)`, so a round is reproducible across a
+  reconnect without persisting RNG state. Heavily unit-tested.
+- **`encounters` table** — active combat state (monster JSON snapshot, monster_hp,
+  round, seed, turn_order). `UNIQUE(player_id)` = one fight at a time; the row
+  exists iff a fight is active and is deleted (with rewards) when it ends. Also
+  fixed `Level.seed`/`Encounter.seed` to `BigInteger` (the SHA-256-derived seed
+  overflows Postgres `INTEGER`).
+- **Combat lifecycle (`app/encounters.py`)** — `start_encounter` (snapshot +
+  initiative), `resolve_combat_turn` (one round -> persist), `_end_encounter`
+  (delete-rowcount gate for replay-safe rewards). Combatants derive from stats
+  (DEX->AC, STR->to-hit/damage).
+- **Combat node (`app/nodes/combat.py`)** — classifies the action
+  deterministically (attack/flee/use), runs the engine, then narrates the
+  engine's factual summary on **Haiku** — OUTSIDE the DB transaction, with a
+  factual fallback if narration fails.
+- **Routing** — the DM node short-circuits to combat with ZERO model calls while
+  a fight is active (Haiku per round, Sonnet only at the seams); the conditional
+  edge `dm -> {combat, END}` finally activates `route_from_dm` + `next_node`.
+  `combat -> END` (one round per turn).
+- **Monsters** — 4 hand-authored floor-1 monsters (`floor01.json` "monsters"),
+  seeded into non-entrance rooms (exit always guarded), shown in `look`/`move`
+  and `/state.monsters_here`. `/state` now reports active `combat`.
+- **Offline** — the stub routes "attack <x>" -> start_combat and narrates rounds,
+  so combat is fully playable without a key.
+
+### What's stubbed / deferred (by design)
+- **No worldgen agent** (M4) — monsters/rooms still hand-seeded; floor 1 only.
+- **No leveling** — monsters carry `xp` in their snapshot, but there's no
+  `players.xp` column yet, so XP isn't applied (M5). Victory awards gold only.
+- **Defeat = revive to 1 HP** (sponsor "auto-reviver") — no real death/respawn
+  system yet. **Flee** leaves the player in the room and restores the monster to
+  it (no movement-on-flee).
+- Frontend unchanged (map/combat UI is M6; `/state.combat` is the data source).
+
+### Reviews
+- **langgraph-architect** (CHANGES-REQUIRED, folded in): NO entry router — the DM
+  stays the hub and short-circuits on an active-encounter DB check; don't resolve
+  round 1 in a separate creation turn; combat builds its own minimal Haiku context
+  (no raw tool-history adjacency); combat -> END.
+- **schema-guardian**: **APPROVE-FOR-COMMIT** — verified BigInteger seeds, encounter
+  constraints/cascade, the atomic start_combat gate, and the delete-rowcount
+  reward gate. Documented the exact M7 Postgres migration (ALTER `levels.seed` ->
+  BIGINT + create `encounters`).
+- **game-writer**: `app/prompts/combat.md` (Haiku, narrate engine events only) +
+  4 balanced monsters.
+- **playtester**: M3 meets its goal; invariant #1/#3 held against every attempt to
+  dictate damage/HP/gold in prose; UNIQUE + delete-gate held under concurrency.
+  Fixed the real findings and re-verified:
+  - SEV-1: heal consumed at full HP *in combat* -> now kept, turn not spent.
+  - SEV-2: a fled monster was deleted from the world -> restored to the room.
+  - SEV-2: combat item-matching lacked token matching -> unified via
+    `dungeon.match_slug` (so "use the pudding" works in and out of combat).
+
+### Known issues / notes for later
+- Alembic still deferred to M7 (`init_db` uses `create_all`); the `Level.seed`
+  Integer->BigInteger change is a no-op on SQLite (dynamic typing) but needs an
+  `ALTER` on Postgres — migration SQL is recorded in the schema-guardian review.
+- Combat narrates *outside* the DB transaction (improvement over M2's DM node);
+  a hard crash after a round commits but before the HTTP response could, on a
+  future retry, resolve one extra round — a documented M7-scale edge, not a
+  local risk.
+
+### Tests
+123 pytest, all green, no network/key (27 combat engine, 11 combat flow, + the
+M1/M2 suite). The engine is tested with a scripted RNG for exact mechanics;
+routing into/out of combat is tested through the graph with the deterministic
+engine; reward replay-safety is tested by double-calling the end-of-fight gate.

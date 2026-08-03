@@ -242,7 +242,17 @@ def _is_manipulation(text: str) -> bool:
     return any(pattern.search(text) for pattern in _MANIPULATION_PATTERNS)
 
 
+def _stub_combat_narration(history: list[BaseMessage]) -> str:
+    """Offline combat narration: the engine summary with its [meta] markers stripped."""
+    text = _last_human_text(history)
+    cleaned = re.sub(r"\[[^\]]*\]", "", text)
+    cleaned = " ".join(cleaned.split())
+    return cleaned or "The fight continues."
+
+
 def _stub_reply(role: str, history: list[BaseMessage]) -> AIMessage:
+    if role == "combat":
+        return AIMessage(content=_stub_combat_narration(history))
     if role != "dm":
         return AIMessage(content=f"[stub:{role}] the engine handles the math; narration pending.")
 
@@ -273,6 +283,10 @@ def _stub_intent_to_tool(text: str, available: set[str]) -> tuple[str, dict] | N
         r"\b(look|examine|inspect|survey|look around|where am i|what do i see)\b", t
     ):
         return "look", {}
+    if "start_combat" in available:
+        m = re.search(r"\b(?:attack|fight|kill|engage|strike|slay|assault|charge)\b\s*(.*)", t)
+        if m:
+            return "start_combat", {"target": m.group(1).strip()}
     if "move" in available:
         m = re.match(
             r"(?:go|move|walk|head|run|travel)?\s*(?:to the|towards|to)?\s*"

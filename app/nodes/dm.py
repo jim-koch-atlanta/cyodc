@@ -1,13 +1,13 @@
-"""DM / router node (M2): interpret input, call tools, narrate results.
+"""DM / router node (M3): interpret input, call tools, route to combat.
 
-Thin by design (per langgraph-architect): resolve the player from the session's
-thread_id, then delegate to the shared tool loop. World state changes ONLY
-through the tools, which mutate the DB (invariant #1). Graph state stays
-{messages, next_node} — no world state leaks in.
+Thin by design. Two paths:
+  1. A fight is already active -> short-circuit to the combat node with ZERO
+     model calls (combat narration is Haiku; we don't burn Sonnet per round).
+  2. Otherwise run the Sonnet tool loop. If a `start_combat` tool just created an
+     encounter this turn, route to combat so round 1 resolves in the same turn.
 
-The node opens one DB transaction for the whole turn (`get_db_session` commits on
-success, rolls back on error). It returns the entire tool exchange at once so the
-checkpoint is written atomically.
+World state changes only through tools / the combat engine (invariant #1). Graph
+state stays {messages, next_node}.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from sqlalchemy import select
 
 from app.db.base import get_db_session
 from app.db.models import Player
+from app.encounters import active_encounter
 from app.nodes.tool_loop import run_tool_loop
 from app.state import DMState
 from app.tools import DM_TOOLS
@@ -28,10 +29,16 @@ def dm_node(state: DMState, config: RunnableConfig) -> dict:
         player = db.scalars(
             select(Player).where(Player.session_id == thread_id)
         ).first()
+
+        # Mid-fight: hand straight to combat, no model call.
+        if player is not None and active_encounter(db, player.id) is not None:
+            return {"messages": [], "next_node": "combat"}
+
         tools = DM_TOOLS if player is not None else []
         player_id = player.id if player is not None else None
         new_messages = run_tool_loop("dm", list(state["messages"]), tools, db, player_id)
 
-    # M2 always ends the turn at the DM. M3 populates next_node from a routing
-    # signal (a dedicated tool), and the graph's conditional edge reads it.
-    return {"messages": new_messages, "next_node": None}
+        # Did a start_combat tool open a fight this turn? Route to round 1.
+        started = player is not None and active_encounter(db, player.id) is not None
+
+    return {"messages": new_messages, "next_node": "combat" if started else None}
