@@ -321,3 +321,99 @@ with a fake LLM (bad tiers/effects coerced; numbers always code-owned); the
 fallback + geometry determinism are pinned; the transition flow (descend creates
 floor 2, refuses off-exit, can't skip floors, combat on a generated floor) runs
 through the real graph.
+
+
+## 2026-08-06 — M5 (stage 1): Memory + NPCs (done)
+
+**Goal met:** a long-run RAG memory (`story_log`) and an NPC agent node with a
+working merchant, both honoring the invariants (LLM never owns state; deterministic
+code owns prices; memory lives in our schema, not graph state). **M5 is split into
+stages** — this is memory + NPCs; the boss node is stage 2 (a separate PR).
+
+### What exists
+- **Embedding gateway (`app/embeddings.py`)** — the analog of `app/llm.py` for
+  vectors. Real backend: **fastembed** (BAAI/bge-small-en-v1.5, 384-dim, ONNX/CPU,
+  no torch; model downloads once). Offline/tests: a deterministic, stopword-filtered
+  **hashing** embedding (256-dim) — reproducible, no network. The backend is
+  resolved once per process and each stored vector carries its backend tag, so
+  vectors from different backends are never compared. `embed_mode` follows the LLM
+  mode (real → local, stub → hash), so tests stay offline automatically.
+- **story_log RAG (`app/memory.py`, `story_log` table)** — every narrated beat
+  (player input + each node's narration) is recorded and retrieved by cosine.
+  Writes are **idempotent** on `UNIQUE(player_id, turn, role)`, where `turn` is the
+  message-window length at the writing node's entry — a replay-stable coordinate, so
+  a re-run of a LangGraph node can't double-log. Recall has two modes: **similarity**
+  over older beats for the DM (verbatim recent window excluded), and **recency** for
+  an NPC's own history (tagged by slug — "does this merchant remember me"). Every
+  cosine query filters on `embed_model` (schema-guardian's must-fix). The DM caps its
+  verbatim window to the last 12 turns and injects a recalled block as context
+  (bounds token cost on long runs — invariant #5).
+- **NPC node (`app/nodes/npc.py`, `app/prompts/npc.md`)** — Haiku. Reached when the
+  DM's `talk` tool fires; the NPC to speak as is read from that ToolMessage (never
+  from graph state). It loads the personality card + engine-priced wares from
+  `levels.npc_catalog`, recalls prior interactions (tagged), and runs a short
+  tool loop. Interactions are **one-shot per utterance** — no held conversation
+  state; continuity comes entirely from memory (langgraph-architect's recommended
+  shape). Its narration is recorded to `story_log`, tagged, so memory compounds
+  visit to visit.
+- **Merchant economy** — `talk` (DM tool; read-only routing signal, mirrors
+  `descend`), plus `buy` and `list_wares` (NPC-node tools). `buy` gates on gold,
+  deducts, and adds an inventory row through the same typed-tool discipline as the
+  DM's tools (invariant #1); the price is **code-owned** (`balance.buy_price_for`,
+  floor-scaled + clamped) — the LLM only names the ware. **Brindle Mox**, a
+  sardonic ex-Contestant-Services merchant (game-writer), is hand-seeded on floor 1
+  and placed in a safe, monster-free, non-exit room.
+- **Context injection (`app/llm.py`)** — `run_agent`/`run_agent_with_tools` gain a
+  `context` param appended to the system prompt (recalled memory, the NPC card);
+  it is never written to the checkpoint. Threaded through the shared `run_tool_loop`.
+- **Storage** — new `story_log` table (indexes `(player_id, id)` and
+  `(player_id, tag)`); new `levels.npc_catalog` JSONDict (mirrors `monster_catalog`);
+  `room.contents` gains an `"npcs"` list. `look`/`move`/`/state` now surface
+  `npcs_here`.
+
+### Reviews
+- **langgraph-architect** (APPROVE w/ revisions, folded in): `talk` signaled via a
+  ToolMessage scan (npc slug read from the tool result, never into graph state);
+  one-shot-per-utterance (memory, not a held `active_conversation` row); `buy` as a
+  typed mutation tool on the npc node via the shared tool loop; story_log writes
+  **inside nodes** with a replay-stable idempotency key; recall injected as context,
+  window capped in the node. `dm -> npc` conditional edge; `npc -> END`.
+- **schema-guardian** (CONDITIONAL APPROVE, folded in): `embed_model` NOT NULL +
+  every cosine path filters on it; idempotency via `UNIQUE(player_id, turn, role)`
+  with an `IntegrityError` no-op on replay; `npc_catalog` as JSONDict (in-place
+  mutation tracked); `contents["npcs"]` plural; `turn` as plain Integer with the
+  "why not BigInteger" note. JSON-vector column is fine on SQLite + Postgres (no SQL
+  vector ops); pgvector deferred to deploy.
+- **game-writer**: `npc.md` (in-character NPC prompt; wares/prices are ground truth;
+  never confirm a purchase the `buy` tool didn't complete), the Brindle Mox card, a
+  `dm.md` `talk`-handoff instruction (the DM hands off, never voices the NPC or
+  quotes prices), and tool-signature fixes.
+- **playtester**: the automated subagent run was declined this session; validated
+  instead by the graph-level NPC tests and an HTTP smoke (talk → list_wares → buy →
+  gold deducted + item added; bogus/unaffordable buys refused with zero state
+  change). Live/real-mode playtesting is open for follow-up.
+
+### Known issues / notes for later
+- **`buy` replay gate**: unlike `take` (removes from room) there's no natural
+  one-time state transition, so `buy` is replay-safe only to the same degree as
+  `use` (gold + inventory commit together in one turn). A true per-turn idempotency
+  token is a documented follow-up.
+- **Deeper-floor NPCs**: worldgen doesn't generate NPCs yet — stage 1 ships the
+  hand-seeded floor-1 merchant only. NPC generation in worldgen (like monsters) is a
+  follow-up.
+- **Boss node** is M5 stage 2 (separate PR). Still no `players.xp`/leveling (from M4).
+- **Dev DB reset required**: `story_log` is a new table (create_all makes it) but
+  `levels.npc_catalog` is a new column on an existing table — `create_all` won't add
+  it. Delete a stale M4 dev DB before running. Alembic still deferred to M7.
+- Embeddings run in real (local) mode only under `anthropic`; the first embed
+  downloads the model. Switching embedding backends silently drops old-backend rows
+  from recall (by the `embed_model` filter) — safe degradation, not an error.
+
+### Tests
+160 pytest, all green, no network/key. New: embeddings (determinism, cosine bounds,
+stopword-driven similarity); memory (record/recall, idempotent double-write, tag
+isolation, cross-backend exclusion, recent-window exclusion); NPC (talk signal, buy
+success/insufficient-gold/not-for-sale, `list_wares` engine pricing, floor-1
+placement, and a full graph-level talk-routing + tagged-memory + buy). The offline
+stub routes shopping intents to talk/buy/list_wares so the whole merchant flow is
+covered without a key.

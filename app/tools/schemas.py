@@ -16,6 +16,7 @@ class LookResult(BaseModel):
     exits: list[str]
     items_here: list[str]
     monsters_here: list[str] = []
+    npcs_here: list[str] = []
 
 
 class MoveResult(BaseModel):
@@ -26,6 +27,7 @@ class MoveResult(BaseModel):
     exits: list[str] = []
     items_here: list[str] = []
     monsters_here: list[str] = []
+    npcs_here: list[str] = []
 
 
 class CombatStartResult(BaseModel):
@@ -66,3 +68,34 @@ class InventoryResult(BaseModel):
     gold: int
     hp: int
     max_hp: int
+
+
+class TalkResult(BaseModel):
+    ok: bool
+    message: str
+    # `talk` is the routing signal the DM node keys on (mirrors descend's
+    # `transition`): true means "hand this turn to the npc node".
+    talk: bool = False
+    npc_slug: str | None = None
+    npc_name: str | None = None
+
+
+class WareView(BaseModel):
+    name: str
+    flavor: str
+    effect: str
+    price_gold: int  # engine-owned; the NPC quotes this, never invents one
+
+
+class WaresResult(BaseModel):
+    ok: bool
+    message: str = ""
+    npc: str | None = None
+    wares: list[WareView] = []
+
+
+class BuyResult(BaseModel):
+    ok: bool
+    message: str
+    item: str | None = None
+    gold: int | None = None

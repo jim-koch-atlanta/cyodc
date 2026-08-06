@@ -24,6 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from app.config import get_settings
 from app.nodes.combat import combat_node
 from app.nodes.dm import dm_node
+from app.nodes.npc import npc_node
 from app.nodes.worldgen import worldgen_node
 from app.routing import route_from_dm
 from app.state import DMState
@@ -38,18 +39,20 @@ def build_graph(checkpointer):
     builder.add_node("dm", dm_node)
     builder.add_node("combat", combat_node)
     builder.add_node("worldgen", worldgen_node)
+    builder.add_node("npc", npc_node)
     builder.add_edge(START, "dm")
-    # The DM ends the turn (exploration), routes to a combat round, or routes to
-    # worldgen (level transition). Each sub-node ends the turn; the DM re-routes
-    # on the next player input. worldgen -> END (not -> dm) keeps the descend turn
-    # to one model call — the arrival is narrated from the generated content.
+    # The DM ends the turn (exploration), routes to a combat round, routes to
+    # worldgen (level transition), or hands off to an NPC. Each sub-node ends the
+    # turn; the DM re-routes on the next player input. Every branch -> END (not
+    # -> dm) keeps the turn to one model call — the sub-node does the narration.
     builder.add_conditional_edges(
         "dm",
         route_from_dm,
-        {"combat": "combat", "level_transition": "worldgen", END: END},
+        {"combat": "combat", "level_transition": "worldgen", "npc": "npc", END: END},
     )
     builder.add_edge("combat", END)
     builder.add_edge("worldgen", END)
+    builder.add_edge("npc", END)
     return builder.compile(checkpointer=checkpointer)
 
 

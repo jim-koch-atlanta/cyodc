@@ -17,7 +17,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from sqlalchemy import select
 
 
-def _echo_narrator(role, history, tools):
+def _echo_narrator(role, history, tools, context=None):
     """Basic fake: cold-open on empty history, else echo the last human turn."""
     last_human = next((m for m in reversed(history) if isinstance(m, HumanMessage)), None)
     if last_human is None:
@@ -80,7 +80,7 @@ def test_tool_call_executes_and_mutates_world(monkeypatch):
             db.scalars(select(Visibility).where(Visibility.player_id == pid)).one().explored
         )
 
-    def tool_then_narrate(role, history, tools):
+    def tool_then_narrate(role, history, tools, context=None):
         # First round emits a `look` tool call; after the ToolMessage, narrate.
         if history and isinstance(history[-1], ToolMessage):
             return AIMessage(content="You survey the room.")
@@ -107,7 +107,7 @@ def test_loop_forces_final_narration_when_model_keeps_calling_tools(monkeypatch)
     with get_db_session() as db:
         provision_new_player(db, "loopy-thread")
 
-    def always_tool(role, history, tools):
+    def always_tool(role, history, tools, context=None):
         # A misbehaving model that never stops calling tools; the cap must save us.
         if tools is None:  # final forced round -> must narrate
             return AIMessage(content="Fine. You look around, exhaustively.")
