@@ -108,5 +108,39 @@
       "gold": 15,
       "tier": "tough"
     }
+  ],
+  "npcs": [
+    {
+      "slug": "brindle_mox",
+      "name": "Brindle Mox",
+      "role": "merchant",
+      "personality": "Brindle Mox is a former VANTABLACK ENTERTAINMENT Contestant Services Representative who survived Floor 1 by the skin of a clerical error and decided to stay. She has converted a supply closet into a shop, obtained a provisional vendor's license (Form 7-G, Subsection: Improvised Commerce), and fully intends to retire here. She is not rooting for contestants to die. She is also not rooting for them to succeed. She is rooting for repeat customers, which is a position she considers morally neutral. She is brisk, unsentimental, and secretly pleased when someone makes it back a second time, though she will not say so.",
+      "voice": "Clipped sentences. Faint bureaucratic precision — she worked in paperwork for seven years and it shows. Occasional dry asides delivered completely flat, as if humor is a form she is filing in triplicate. Does not volunteer information. Does answer questions. Refers to the dungeon by its proper name, The Delve, with the resigned affection of someone who named a stray cat and now cannot get rid of it.",
+      "sample_lines": [
+        "Mox Provisional Goods. License is current. Don't touch the inventory unless you're buying.",
+        "The poultice works. I tested it on myself. I'd rather not say when.",
+        "Back already. I'll take that as a positive sign, professionally speaking."
+      ],
+      "wares": [
+        {
+          "name": "Regulation Field Poultice",
+          "flavor": "A cloth packet of something that smells like a filing cabinet and works anyway. VANTABLACK Contestant Services used to distribute these at intake. Mox kept a case when they reassigned her.",
+          "effect": "minor_heal",
+          "price_gold_suggested": 12
+        },
+        {
+          "name": "Compliance Lantern",
+          "flavor": "A stamped-tin lantern, dented, still functional. The safety label on the side is in four languages, two of which no longer have speakers. Burns for longer than it has any right to.",
+          "effect": "light",
+          "price_gold_suggested": 8
+        },
+        {
+          "name": "Severance Charm",
+          "flavor": "A small laminated card on a neck-cord. Mox says it was issued to Contestant Services staff as a morale benefit. The print on the front reads GOOD LUCK in fourteen-point serif. The back is blank.",
+          "effect": "trinket",
+          "price_gold_suggested": 5
+        }
+      ]
+    }
   ]
 }

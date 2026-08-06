@@ -34,6 +34,7 @@ from app.dungeon import (
     exits_from,
     load_map,
     load_monster_catalog,
+    load_npc_catalog,
     provision_new_player,
     render_fog_map,
 )
@@ -114,6 +115,7 @@ class StateResponse(BaseModel):
     exits: list[str]
     items_here: list[str]
     monsters_here: list[str]
+    npcs_here: list[str]
     inventory: list[InventoryEntry]
     theme: str
     map: list[str]
@@ -257,7 +259,9 @@ def get_world_state(session_id: str) -> StateResponse:
         explored = {tuple(cell) for cell in (vis.explored if vis else [])}
         here_slugs = list(room.contents.get("items", [])) if room else []
         monster_slugs = list(room.contents.get("monsters", [])) if room else []
+        npc_slugs = list(room.contents.get("npcs", [])) if room else []
         catalog = load_monster_catalog(player.floor, level.monster_catalog)
+        npc_catalog = load_npc_catalog(player.floor, level.npc_catalog)
         inv_rows = db.scalars(
             select(InventoryRow).where(InventoryRow.player_id == player.id)
         ).all()
@@ -284,6 +288,7 @@ def get_world_state(session_id: str) -> StateResponse:
             exits=exits_from(dm, player.pos_x, player.pos_y),
             items_here=_item_names(db, here_slugs),
             monsters_here=[catalog[s]["name"] if s in catalog else s for s in monster_slugs],
+            npcs_here=[npc_catalog[s]["name"] if s in npc_catalog else s for s in npc_slugs],
             inventory=[InventoryEntry(name=r.item.name, qty=r.qty) for r in inv_rows],
             theme=level.theme,
             map=render_fog_map(dm, explored, player.pos_x, player.pos_y),

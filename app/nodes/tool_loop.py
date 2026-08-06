@@ -31,14 +31,19 @@ def run_tool_loop(
     player_id: int | None,
     *,
     max_rounds: int = MAX_TOOL_ROUNDS,
+    context: str | None = None,
 ) -> list[BaseMessage]:
-    """Return every new message this turn produced (AIMessages + ToolMessages)."""
+    """Return every new message this turn produced (AIMessages + ToolMessages).
+
+    `context` (recalled memory, an NPC card) is passed through to the gateway and
+    appended to the system prompt each round — never added to the message window.
+    """
     produced: list[BaseMessage] = []
     working = list(history)
 
     for round_num in range(max_rounds + 1):
         final = round_num == max_rounds
-        reply = run_agent_with_tools(role, working, tools=None if final else tools)
+        reply = run_agent_with_tools(role, working, tools=None if final else tools, context=context)
         produced.append(reply)
         working.append(reply)
 

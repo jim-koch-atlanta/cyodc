@@ -92,6 +92,15 @@ def load_monster_catalog(floor: int, catalog_override: dict | None = None) -> di
     return {m["slug"]: m for m in load_floor_content(floor).get("monsters", [])}
 
 
+def load_npc_catalog(floor: int, catalog_override: dict | None = None) -> dict[str, dict]:
+    """slug -> NPC card (name, role, personality, voice, wares). Mirrors
+    load_monster_catalog: floor 1 is hand-seeded; generated levels store the
+    catalog on the level (or None) — pass it as catalog_override."""
+    if catalog_override is not None:
+        return catalog_override
+    return {n["slug"]: n for n in load_floor_content(floor).get("npcs", [])}
+
+
 def monster_names_in_room(catalog: dict[str, dict], room: Room | None) -> list[str]:
     if room is None:
         return []
@@ -192,12 +201,14 @@ def build_level(session: Session, player: Player, floor: int) -> Level:
     dm = generate(seed=seed)
     rng = Random(seed ^ 0x9E3779B9)
 
+    npc_catalog = {n["slug"]: n for n in content.get("npcs", [])}
     level = Level(
         player_id=player.id,
         floor=floor,
         seed=seed,
         theme=content.get("theme", ""),
         grid=dm.to_dict(),
+        npc_catalog=npc_catalog or None,
     )
     session.add(level)
     session.flush()
@@ -212,12 +223,13 @@ def build_level(session: Session, player: Player, floor: int) -> Level:
                 x=rect.x, y=rect.y, w=rect.w, h=rect.h,
                 kind=kind,
                 description=description,
-                contents={"items": [], "monsters": [], "npc": None},
+                contents={"items": [], "monsters": [], "npcs": []},
             )
         )
     session.flush()
     _place_items(session, level, rng)
     _place_monsters(session, level, rng)
+    _place_npcs(session, level, rng)
     return level
 
 
@@ -235,6 +247,24 @@ def _place_monsters(session: Session, level: Level, rng: Random) -> None:
             slug = rng.choice(slugs)
             assert slug in catalog, f"monster slug {slug!r} not in catalog"
             room.contents["monsters"] = list(room.contents.get("monsters", [])) + [slug]
+    session.flush()
+
+
+def _place_npcs(session: Session, level: Level, rng: Random) -> None:
+    """Put each floor NPC in a safe, discoverable room: prefer a monster-free,
+    non-exit room; fall back to the entrance. NPCs never share a room with a
+    guard (you shouldn't have to fight to reach the merchant)."""
+    catalog = load_npc_catalog(level.floor)
+    if not catalog:
+        return
+    rooms = session.scalars(select(Room).where(Room.level_id == level.id)).all()
+    safe = [r for r in rooms if r.kind != "exit" and not r.contents.get("monsters")]
+    entrance = next((r for r in rooms if r.kind == "entrance"), rooms[0] if rooms else None)
+    for slug in sorted(catalog):
+        room = rng.choice(safe) if safe else entrance
+        if room is None:
+            break
+        room.contents["npcs"] = list(room.contents.get("npcs", [])) + [slug]
     session.flush()
 
 
@@ -360,7 +390,7 @@ def materialize_generated_level(
                 contents={
                     "items": item_slugs,
                     "monsters": list(content.monster_slugs.get(idx, [])),
-                    "npc": None,
+                    "npcs": [],  # generated floors are NPC-free in M5 stage 1
                 },
             )
         )

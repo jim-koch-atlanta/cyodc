@@ -18,6 +18,7 @@ from langchain_core.tools import InjectedToolArg, tool
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.balance import buy_price_for, item_effect_for
 from app.db.models import InventoryRow, Item, Player
 from app.dungeon import (
     DIRECTIONS,
@@ -26,11 +27,13 @@ from app.dungeon import (
     exits_from,
     load_map,
     load_monster_catalog,
+    load_npc_catalog,
     normalize_direction,
     reveal,
 )
 from app.encounters import active_encounter, start_encounter
 from app.tools.schemas import (
+    BuyResult,
     CombatStartResult,
     DescendResult,
     InventoryResult,
@@ -38,7 +41,10 @@ from app.tools.schemas import (
     LookResult,
     MoveResult,
     TakeResult,
+    TalkResult,
     UseResult,
+    WareView,
+    WaresResult,
 )
 
 _CORRIDOR_DESC = (
@@ -74,15 +80,36 @@ def _describe(session, level, dm, x, y):
     room = current_room(session, level, x, y)
     slugs = list(room.contents.get("items", [])) if room else []
     monster_slugs = list(room.contents.get("monsters", [])) if room else []
+    npc_slugs = list(room.contents.get("npcs", [])) if room else []
     catalog = load_monster_catalog(level.floor, level.monster_catalog)
     monsters = [catalog[s]["name"] if s in catalog else s for s in monster_slugs]
+    npc_catalog = load_npc_catalog(level.floor, level.npc_catalog)
+    npcs = [npc_catalog[s]["name"] if s in npc_catalog else s for s in npc_slugs]
     return (
         room.kind if room else "corridor",
         room.description if room else _CORRIDOR_DESC,
         exits_from(dm, x, y),
         _item_names(session, slugs),
         monsters,
+        npcs,
     )
+
+
+def _npc_here(session, level, x, y) -> dict | None:
+    """The (first, wares-bearing) NPC in the room at (x, y), or None. Shared by
+    talk / buy / list_wares so they all resolve the same merchant."""
+    room = current_room(session, level, x, y)
+    npc_slugs = list(room.contents.get("npcs", [])) if room else []
+    catalog = load_npc_catalog(level.floor, level.npc_catalog)
+    for slug in npc_slugs:
+        if slug in catalog:
+            return catalog[slug]
+    return None
+
+
+def _ware_slug(npc_slug: str, name: str) -> str:
+    trail = "-".join(ch for ch in name.lower().replace("'", "").split() if ch)
+    return f"ware-{npc_slug}-{trail}"
 
 
 def _match_monster(target: str, slugs: list[str], catalog: dict) -> str | None:
@@ -113,9 +140,12 @@ def look(
     dm = load_map(level)
     vis = _visibility(session, player_id, level.id)
     reveal(session, vis, dm, player.pos_x, player.pos_y)
-    kind, desc, exits, items, monsters = _describe(session, level, dm, player.pos_x, player.pos_y)
+    kind, desc, exits, items, monsters, npcs = _describe(
+        session, level, dm, player.pos_x, player.pos_y
+    )
     return LookResult(
-        room=kind, description=desc, exits=exits, items_here=items, monsters_here=monsters
+        room=kind, description=desc, exits=exits, items_here=items,
+        monsters_here=monsters, npcs_here=npcs,
     ).model_dump_json()
 
 
@@ -143,10 +173,10 @@ def move(
     player.pos_x, player.pos_y = nx, ny
     vis = _visibility(session, player_id, level.id)
     reveal(session, vis, dm, nx, ny)
-    kind, desc, exits, items, monsters = _describe(session, level, dm, nx, ny)
+    kind, desc, exits, items, monsters, npcs = _describe(session, level, dm, nx, ny)
     return MoveResult(
         ok=True, message=f"You move {d}.", room=kind, description=desc,
-        exits=exits, items_here=items, monsters_here=monsters,
+        exits=exits, items_here=items, monsters_here=monsters, npcs_here=npcs,
     ).model_dump_json()
 
 
@@ -342,5 +372,129 @@ def descend(
     ).model_dump_json()
 
 
-DM_TOOLS = [look, move, take, use, inventory, start_combat, descend]
-TOOLS_BY_NAME = {t.name: t for t in DM_TOOLS}
+@tool
+def talk(
+    target: str = "",
+    *,
+    session: Annotated[Session, InjectedToolArg],
+    player_id: Annotated[int, InjectedToolArg],
+) -> str:
+    """Speak with an NPC in your current room — a merchant, a clerk, anyone who talks back. Pass their name (blank if only one is here)."""
+    player = session.get(Player, player_id)
+    level = current_level(session, player)
+    room = current_room(session, level, player.pos_x, player.pos_y)
+    npc_slugs = list(room.contents.get("npcs", [])) if room else []
+    if not npc_slugs:
+        return TalkResult(ok=False, message="There's no one here to talk to.").model_dump_json()
+
+    catalog = load_npc_catalog(level.floor, level.npc_catalog)
+    pairs = [(s, catalog.get(s, {}).get("name", s)) for s in npc_slugs]
+    slug = _match_slug(target, pairs) if (target or "").strip() else npc_slugs[0]
+    if slug is None:
+        slug = npc_slugs[0]  # addressed vaguely — talk to whoever's here
+    name = catalog.get(slug, {}).get("name", slug)
+    # Read-only signal; the npc node runs the actual exchange. `talk=True` is what
+    # the DM node routes on (mirrors descend's `transition`).
+    return TalkResult(
+        ok=True, talk=True, npc_slug=slug, npc_name=name, message=f"You turn to {name}."
+    ).model_dump_json()
+
+
+@tool
+def list_wares(
+    *,
+    session: Annotated[Session, InjectedToolArg],
+    player_id: Annotated[int, InjectedToolArg],
+) -> str:
+    """List what the merchant in your current room has for sale, with prices."""
+    player = session.get(Player, player_id)
+    level = current_level(session, player)
+    npc = _npc_here(session, level, player.pos_x, player.pos_y)
+    if npc is None or not npc.get("wares"):
+        return WaresResult(ok=False, message="Nothing's for sale here.").model_dump_json()
+    views = [
+        WareView(
+            name=w.get("name", "Oddment"),
+            flavor=w.get("flavor", ""),
+            effect=w.get("effect", "trinket"),
+            price_gold=buy_price_for(w.get("effect", "trinket"), level.floor),
+        )
+        for w in npc["wares"]
+    ]
+    return WaresResult(ok=True, npc=npc.get("name", "the merchant"), wares=views).model_dump_json()
+
+
+@tool
+def buy(
+    item: str,
+    *,
+    session: Annotated[Session, InjectedToolArg],
+    player_id: Annotated[int, InjectedToolArg],
+) -> str:
+    """Buy a ware from the merchant in your current room. Give the item's name. The price is set by the shop, not negotiable."""
+    player = session.get(Player, player_id)
+    level = current_level(session, player)
+    npc = _npc_here(session, level, player.pos_x, player.pos_y)
+    if npc is None or not npc.get("wares"):
+        return BuyResult(ok=False, message="There's no one here selling anything.").model_dump_json()
+
+    wares = npc["wares"]
+    pairs = [(_ware_slug(npc["slug"], w["name"]), w["name"]) for w in wares]
+    slug = _match_slug(item, pairs)
+    ware = next(
+        (w for w in wares if _ware_slug(npc["slug"], w["name"]) == slug), None
+    ) if slug else None
+    if ware is None:
+        return BuyResult(ok=False, message=f'No "{item}" for sale here.').model_dump_json()
+
+    price = buy_price_for(ware.get("effect", "trinket"), level.floor)
+    if player.gold < price:
+        return BuyResult(
+            ok=False, gold=player.gold,
+            message=f"You can't afford the {ware['name']} — {price} gold, and you have {player.gold}.",
+        ).model_dump_json()
+
+    # Code owns the price (invariant #3); gold + inventory change together in this
+    # one committed turn. (Buy has no natural one-time gate like `take`; a mid-node
+    # replay is the same residual risk as `use` — documented for a later token gate.)
+    player.gold = player.gold - price
+    item_row = _get_or_create_ware_item(session, player, npc["slug"], ware, level.floor)
+    inv = session.scalars(
+        select(InventoryRow).where(
+            InventoryRow.player_id == player_id, InventoryRow.item_id == item_row.id
+        )
+    ).first()
+    if inv is not None:
+        inv.qty = inv.qty + 1
+    else:
+        session.add(InventoryRow(player_id=player_id, item_id=item_row.id, qty=1))
+    return BuyResult(
+        ok=True, item=ware["name"], gold=player.gold,
+        message=f"You buy the {ware['name']} for {price} gold.",
+    ).model_dump_json()
+
+
+def _get_or_create_ware_item(session: Session, player: Player, npc_slug: str, ware: dict, floor: int) -> Item:
+    """Insert-or-get the Item backing a merchant ware. Player-scoped like other
+    generated items, so it cascades on player delete. Effects come from the menu."""
+    slug = _ware_slug(npc_slug, ware["name"])
+    existing = session.scalars(select(Item).where(Item.slug == slug)).first()
+    if existing is not None:
+        return existing
+    item = Item(
+        slug=slug,
+        name=ware.get("name", "Oddment"),
+        flavor_text=ware.get("flavor", ""),
+        effects=item_effect_for(ware.get("effect", "trinket"), floor),
+        player_id=player.id,
+    )
+    session.add(item)
+    session.flush()
+    return item
+
+
+DM_TOOLS = [look, move, take, use, inventory, start_combat, descend, talk]
+# Executed inside the npc node's tool loop (Haiku). `buy` mutates state through
+# the same typed-tool discipline as the DM's tools (invariant #1).
+NPC_TOOLS = [buy, list_wares]
+TOOLS_BY_NAME = {t.name: t for t in [*DM_TOOLS, *NPC_TOOLS]}

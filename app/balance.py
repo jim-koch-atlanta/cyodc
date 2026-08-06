@@ -57,3 +57,23 @@ def item_effect_for(menu: str, floor: int) -> dict:
     if menu == "light":
         return {"light": True}
     return {}  # trinket: pure flavor
+
+
+# Base merchant prices per effect (floor-1 reference). The NPC card may *suggest*
+# a price, but the engine owns the number — same principle as monster stats: the
+# LLM never emits gold, it only picks the effect and the code prices it.
+_WARE_BASE_PRICE = {
+    "minor_heal": 12,
+    "major_heal": 30,
+    "small_coins": 40,
+    "large_coins": 120,
+    "light": 8,
+    "trinket": 5,
+}
+
+
+def buy_price_for(effect: str, floor: int) -> int:
+    """Bounded, floor-scaled purchase price for a merchant ware."""
+    base = _WARE_BASE_PRICE.get(effect, 10)
+    step = max(0, floor - 1)
+    return min(base + (base * step) // 4, 999)

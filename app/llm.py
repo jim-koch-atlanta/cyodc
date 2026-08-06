@@ -86,11 +86,21 @@ def message_text(message: BaseMessage) -> str:
     return "".join(parts)
 
 
-def run_agent(role: str, history: list[BaseMessage]) -> AIMessage:
+def _system_with_context(role: str, context: str | None) -> str:
+    """Role system prompt, optionally with per-turn injected context (recalled
+    memory, an NPC character card). Appended here, never stored in the checkpoint."""
+    system = load_system_prompt(role)
+    return f"{system}\n\n{context}" if context else system
+
+
+def run_agent(
+    role: str, history: list[BaseMessage], context: str | None = None
+) -> AIMessage:
     """Run one agent turn. Prepends the role's system prompt and returns the reply.
 
-    The system prompt is injected here at call time and is NOT stored in the
-    checkpointed message window (keeps checkpoints small and history clean).
+    `context` (recalled memory, a character card) is appended to the system prompt
+    at call time and is NOT stored in the checkpointed message window (keeps
+    checkpoints small and history clean).
     """
     if role not in MODEL_BY_ROLE:
         raise ValueError(f"unknown agent role: {role!r}")
@@ -98,7 +108,7 @@ def run_agent(role: str, history: list[BaseMessage]) -> AIMessage:
     if get_settings().resolved_llm_mode == "stub":
         return _stub_reply(role, history)
 
-    system = load_system_prompt(role)
+    system = _system_with_context(role, context)
     model = _build_anthropic(role)
     reply = model.invoke([SystemMessage(content=system), *_to_anthropic_history(history)])
     if isinstance(reply, AIMessage):
@@ -107,7 +117,7 @@ def run_agent(role: str, history: list[BaseMessage]) -> AIMessage:
 
 
 def run_agent_with_tools(
-    role: str, history: list[BaseMessage], tools: list | None
+    role: str, history: list[BaseMessage], tools: list | None, context: str | None = None
 ) -> AIMessage:
     """Like `run_agent`, but binds `tools` so the model can call them.
 
@@ -121,7 +131,7 @@ def run_agent_with_tools(
     if get_settings().resolved_llm_mode == "stub":
         return _stub_reply_with_tools(role, history, tools)
 
-    system = load_system_prompt(role)
+    system = _system_with_context(role, context)
     model = _build_anthropic(role)
     if tools:
         model = model.bind_tools(tools)
@@ -315,6 +325,20 @@ def _stub_intent_to_tool(text: str, available: set[str]) -> tuple[str, dict] | N
         m = re.search(r"\b(?:attack|fight|kill|engage|strike|slay|assault|charge)\b\s*(.*)", t)
         if m:
             return "start_combat", {"target": m.group(1).strip()}
+    # NPC-node tools (buy/list_wares available only inside the npc node).
+    if "list_wares" in available and re.search(
+        r"\b(wares|menu|for sale|what.*(sell|selling|have|got|offer)|show me (your |the )?(wares|goods|stock|shop))\b", t
+    ):
+        return "list_wares", {}
+    if "buy" in available:
+        m = re.search(r"\b(?:buy|purchase|i'?ll take|i will take|acquire)\b\s+(?:the |a |an |some )?(.+)", t)
+        if m and m.group(1).strip():
+            return "buy", {"item": m.group(1).strip()}
+    # DM-node talk: any clear attempt to address / trade with an NPC in the room.
+    if "talk" in available and re.search(
+        r"\b(talk|speak|chat|greet|ask|converse|barter|haggle|browse|shop|merchant|vendor|trade|sell|buy|purchase|wares|store)\b", t
+    ):
+        return "talk", {"target": ""}
     if "move" in available:
         m = re.match(
             r"(?:go|move|walk|head|run|travel)?\s*(?:to the|towards|to)?\s*"
@@ -374,6 +398,13 @@ def _narrate_tool_result(tool_msg: ToolMessage) -> str:
     if not data.get("ok", True):
         return data.get("message", "That doesn't work, and the audience noticed.")
 
+    if "wares" in data:  # list_wares
+        wares = data.get("wares") or []
+        if not wares:
+            return data.get("message") or "Nothing for sale here."
+        listing = "; ".join(f"{w['name']} ({w['price_gold']} gold)" for w in wares)
+        return f"{data.get('npc') or 'The merchant'} has for sale: {listing}."
+
     if "exits" in data and "room" in data:  # look / move
         parts: list[str] = []
         if data.get("message"):
@@ -382,6 +413,9 @@ def _narrate_tool_result(tool_msg: ToolMessage) -> str:
             parts.append(data["description"])
         if data.get("items_here"):
             parts.append("Here: " + ", ".join(data["items_here"]) + ".")
+        if data.get("npcs_here"):
+            names = ", ".join(data["npcs_here"])
+            parts.append(f"{names} {'is' if len(data['npcs_here']) == 1 else 'are'} here.")
         parts.append(
             "Exits: " + ", ".join(data["exits"]) + "."
             if data.get("exits")

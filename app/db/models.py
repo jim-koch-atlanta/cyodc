@@ -131,6 +131,12 @@ class Level(Base):
     monster_catalog: Mapped[dict | None] = mapped_column(
         JSONDict, nullable=True, default=None
     )
+    # Mirrors monster_catalog for NPCs: {slug: {name, role, personality, voice,
+    # wares}}. NULL when the floor has no NPCs. JSONDict (not bare JSON) so the
+    # "met" bookkeeping we may add in place is change-tracked.
+    npc_catalog: Mapped[dict | None] = mapped_column(
+        JSONDict, nullable=True, default=None
+    )
 
     rooms: Mapped[list["Room"]] = relationship(
         back_populates="level", cascade="all, delete-orphan"
@@ -154,7 +160,7 @@ class Room(Base):
     h: Mapped[int] = mapped_column(Integer, nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    # {"items": [slug, ...], "monsters": [...], "npc": null}
+    # {"items": [slug, ...], "monsters": [slug, ...], "npcs": [slug, ...]}
     contents: Mapped[dict] = mapped_column(JSONDict, nullable=False, default=dict)
 
     level: Mapped["Level"] = relationship(back_populates="rooms")
@@ -208,3 +214,40 @@ class Encounter(Base):
     )
 
     player: Mapped["Player"] = relationship(back_populates="encounter")
+
+
+class StoryLog(Base):
+    """RAG memory (M5): one row per narrated beat — the player's input and each
+    node's narration. Append-only; retrieved by embedding-cosine for long-run
+    continuity. NOT graph state: the checkpointer holds the verbatim recent
+    window; this holds the searchable long tail (invariant #2).
+
+    Writes are idempotent on (player_id, turn, role): `turn` is the message-window
+    length at the writing node's entry — stable across a LangGraph node re-run —
+    so a replayed node can't double-log (the caller catches the IntegrityError)."""
+
+    __tablename__ = "story_log"
+    __table_args__ = (
+        UniqueConstraint("player_id", "turn", "role", name="uq_story_log_player_turn_role"),
+        Index("ix_story_log_player_id_id", "player_id", "id"),
+        Index("ix_story_log_player_tag", "player_id", "tag"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)  # insertion order for recency
+    player_id: Mapped[int] = mapped_column(
+        ForeignKey("players.id", ondelete="CASCADE"), nullable=False
+    )
+    # Replay-stable turn coordinate (message-window length at node entry). Plain
+    # Integer: a per-player turn count (~2.1B ceiling is millennia of play), so
+    # BigInteger is unneeded here — unlike Level.seed, which holds a hashed value.
+    turn: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # player|dm|combat|npc
+    # NPC/boss slug for per-entity recall ("does this merchant remember me").
+    tag: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # list[float] vector; cosine is computed in Python (DB-agnostic — SQLite now,
+    # pgvector at deploy), so no vector ops or GIN index touch this column.
+    embedding: Mapped[list] = mapped_column(JSON, nullable=False)
+    # NOT NULL by design: recall MUST filter on this so vectors from different
+    # embedding backends are never compared. A missing value should fail loud.
+    embed_model: Mapped[str] = mapped_column(String(64), nullable=False)

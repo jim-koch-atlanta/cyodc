@@ -14,6 +14,7 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LLMMode = Literal["auto", "anthropic", "stub"]
+EmbedMode = Literal["auto", "local", "stub"]
 
 
 class Settings(BaseSettings):
@@ -42,6 +43,10 @@ class Settings(BaseSettings):
     )
     # "auto" resolves to "anthropic" when a key is present, else "stub".
     llm_mode: LLMMode = Field(default="auto", validation_alias="CYODC_LLM_MODE")
+    # Embedding backend for story_log RAG. "auto" follows the LLM mode: a real
+    # run ("anthropic") uses the local fastembed model; offline/tests ("stub")
+    # use the deterministic hashing embedding. See app/embeddings.py.
+    embed_mode: EmbedMode = Field(default="auto", validation_alias="CYODC_EMBED_MODE")
 
     @property
     def resolved_llm_mode(self) -> Literal["anthropic", "stub"]:
@@ -49,6 +54,13 @@ class Settings(BaseSettings):
         if self.llm_mode != "auto":
             return self.llm_mode  # type: ignore[return-value]
         return "anthropic" if self.anthropic_api_key else "stub"
+
+    @property
+    def resolved_embed_mode(self) -> Literal["local", "stub"]:
+        """Concrete embedding backend after resolving "auto" (follows LLM mode)."""
+        if self.embed_mode != "auto":
+            return self.embed_mode  # type: ignore[return-value]
+        return "local" if self.resolved_llm_mode == "anthropic" else "stub"
 
 
 @lru_cache
