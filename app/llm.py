@@ -129,6 +129,25 @@ def run_agent_with_tools(
     return reply if isinstance(reply, AIMessage) else AIMessage(content=message_text(reply))
 
 
+def run_structured(role: str, history: list[BaseMessage], schema: type):
+    """Return a validated `schema` instance (a Pydantic model) from one model call,
+    via the provider's structured-output path (Anthropic: a forced tool call — no
+    "please return JSON" prompting or markdown-fence parsing). Keeps model
+    selection + token budgets in this one gateway (invariant #5).
+
+    Real-model only: callers must gate on `resolved_llm_mode == "anthropic"` first
+    (stub mode has no structured path — e.g. worldgen falls back to deterministic
+    content before reaching here).
+    """
+    if role not in MODEL_BY_ROLE:
+        raise ValueError(f"unknown agent role: {role!r}")
+    if get_settings().resolved_llm_mode != "anthropic":
+        raise RuntimeError("run_structured needs a real model; gate the caller on anthropic mode")
+    system = load_system_prompt(role)
+    model = _build_anthropic(role).with_structured_output(schema)
+    return model.invoke([SystemMessage(content=system), *history])
+
+
 def _build_anthropic(role: str):
     # Imported lazily so stub mode / tests never require the SDK or a key.
     from langchain_anthropic import ChatAnthropic

@@ -6,7 +6,9 @@ Invariants honored:
   BSP skeleton and pull content by index — the model's room list is advisory).
 - The LLM never emits combat/loot numbers: it picks a monster TIER and an item
   EFFECT from fixed menus, and `app/balance.py` turns those into bounded numbers.
-- The model output is validated through Pydantic before it touches the DB.
+- The model returns structured output — via LangChain's with_structured_output,
+  which forces a schema-shaped tool call — validated through Pydantic before it
+  touches the DB (no "please return JSON" parsing).
 - Any failure (stub mode, network, bad JSON, bad values) falls back to
   deterministic content recycled from floor01.json, so descending never breaks.
 """
@@ -27,7 +29,7 @@ from pydantic import BaseModel, field_validator
 from app.balance import ITEM_EFFECT_MENU, MONSTER_TIERS, item_effect_for, monster_stats_for
 from app.config import get_settings
 from app.dungeon import load_floor_content
-from app.llm import message_text, run_agent
+from app.llm import run_structured
 from app.mapgen import DungeonMap
 
 logger = logging.getLogger("cyodc.worldgen")
@@ -111,11 +113,6 @@ def _skeleton_prompt(floor: int, dm: DungeonMap, kinds: dict[int, str]) -> str:
     return json.dumps({"floor": floor, "rooms": rooms})
 
 
-def _extract_json(text: str) -> str:
-    start, end = text.find("{"), text.rfind("}")
-    return text[start : end + 1] if start != -1 and end != -1 else text
-
-
 def generate_floor_content(
     floor: int, dm: DungeonMap, kinds: dict[int, str], seed: int, session_id: str
 ) -> FloorContent:
@@ -124,9 +121,11 @@ def generate_floor_content(
     if get_settings().resolved_llm_mode != "anthropic":
         return _fallback_content(floor, dm, kinds, seed, session_id)
     try:
-        reply = run_agent("worldgen", [HumanMessage(content=_skeleton_prompt(floor, dm, kinds))])
-        data = json.loads(_extract_json(message_text(reply)))
-        out = WorldgenOutput.model_validate(data)
+        out = run_structured(
+            "worldgen",
+            [HumanMessage(content=_skeleton_prompt(floor, dm, kinds))],
+            WorldgenOutput,
+        )
         return _to_floor_content(out, floor, dm, kinds, session_id)
     except Exception:
         logger.exception("worldgen generation failed on floor %s; using fallback", floor)

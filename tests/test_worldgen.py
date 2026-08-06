@@ -6,10 +6,6 @@ turns that into bounded stats. These tests pin that boundary.
 
 from __future__ import annotations
 
-import json
-
-from langchain_core.messages import AIMessage
-
 import app.worldgen as worldgen_mod
 from app.balance import item_effect_for, monster_stats_for
 from app.dungeon import _assign_kinds
@@ -101,7 +97,11 @@ def test_generate_uses_llm_when_available(monkeypatch):
         {"index": i, "description": f"room {i} of bone"} for i in range(len(dm.rooms))
     ]}
     monkeypatch.setattr(worldgen_mod, "get_settings", lambda: _AnthropicSettings())
-    monkeypatch.setattr(worldgen_mod, "run_agent", lambda role, msgs: AIMessage(content=json.dumps(payload)))
+    # with_structured_output returns a validated schema instance, not text.
+    monkeypatch.setattr(
+        worldgen_mod, "run_structured",
+        lambda role, msgs, schema: WorldgenOutput.model_validate(payload),
+    )
 
     content = generate_floor_content(2, dm, kinds, seed=5, session_id="s")
     assert content.theme == "Neon Ossuary"
@@ -114,8 +114,11 @@ def test_generate_falls_back_on_bad_llm_output(monkeypatch):
     class _AnthropicSettings:
         resolved_llm_mode = "anthropic"
 
+    def _boom(role, msgs, schema):
+        raise ValueError("model produced unparseable output")
+
     monkeypatch.setattr(worldgen_mod, "get_settings", lambda: _AnthropicSettings())
-    monkeypatch.setattr(worldgen_mod, "run_agent", lambda role, msgs: AIMessage(content="not json at all"))
+    monkeypatch.setattr(worldgen_mod, "run_structured", _boom)
 
     content = generate_floor_content(2, dm, kinds, seed=5, session_id="s")  # must not raise
     assert set(content.descriptions) == set(range(len(dm.rooms)))  # fallback covered every room
