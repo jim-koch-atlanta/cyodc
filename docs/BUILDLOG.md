@@ -247,3 +247,77 @@ disconnect; the DM routes into and out of combat.
 M1/M2 suite). The engine is tested with a scripted RNG for exact mechanics;
 routing into/out of combat is tested through the graph with the deterministic
 engine; reward replay-safety is tested by double-calling the end-of-fight gate.
+
+---
+
+## 2026-08-02 — M4: Worldgen agent + level transitions (done)
+
+**Goal met:** a Sonnet worldgen agent decorates a deterministic BSP skeleton and
+writes the floor to the DB; the player descends between floors; the LLM never
+owns geometry or numbers.
+
+### What exists
+- **Worldgen agent (`app/worldgen.py`, `app/prompts/worldgen.md`)** — given the
+  BSP room skeleton (index/kind/size), Sonnet returns strict JSON decorating each
+  room: theme, per-room description, item/monster placement. It picks a monster
+  **tier** and an item **effect** from fixed menus; it emits no numbers. Output is
+  validated through Pydantic (`WorldgenOutput`, unknown tier/effect coerced to
+  safe defaults) before it touches the DB. Any failure (stub mode, timeout, bad
+  JSON) falls back to deterministic content recycled from floor01.json, so
+  descending never breaks.
+- **Code-owned balance (`app/balance.py`)** — tier stat-blocks + item-effect menu
+  → concrete numbers scaled/clamped by floor depth (invariant #3). Verified live:
+  real Sonnet produced fresh themed floors ("Records Retention", monsters like
+  "Compliance Auditor") with every stat set by code.
+- **Level transitions** — a `descend` tool (read-only signal; validates you're on
+  the exit and unguarded) makes the DM route to a new **worldgen node**. The node
+  runs in three phases (read → one Sonnet call with NO DB held → materialize +
+  place at the new entrance), replay-safe via an explicit `SELECT` before insert
+  and get-or-create of visibility. `worldgen -> END`; the arrival is narrated from
+  the generated entrance description (one model call for the whole descend turn).
+- **Storage** — generated items go in the `items` table scoped by the new nullable
+  `items.player_id` (cascade on delete; NULL = shared catalog). Generated monster
+  defs live in the new `levels.monster_catalog` JSON column, so combat resolves
+  stats on any floor. Added composite indexes (`ix_levels_player_floor`,
+  `ix_visibility_player_level`, `ix_items_player_id`).
+- **Floor 1 stays hand-seeded** (fast, offline, known-good); floors 2+ are
+  generated. `/state` gains `can_descend`; the stub routes "descend"/"stairs".
+
+### Reviews
+- **langgraph-architect** (CHANGES-REQUIRED, folded in): three-phase node (no DB
+  held across the model call), descend signaled via a ToolMessage scan (no DB
+  marker), `worldgen -> END`, explicit-SELECT replay guard.
+- **schema-guardian**: **APPROVE-FOR-COMMIT** — verified item scoping, the
+  `monster_catalog` column, the indexes, Pydantic-validated generated content, and
+  fixed a latent defect (combat previously only read floor01.json →
+  `load_monster_catalog(floor, override)` now resolves the per-level catalog).
+  M7 migration SQL documented (2 nullable columns + 3 indexes).
+- **game-writer**: `worldgen.md` ("Senior Floor Decorator" voice; decorates the
+  skeleton, picks tier/effect, never numbers).
+- **playtester**: M4 meets its goal; geometry deterministic, combat works on
+  generated floors, transitions replay-safe, invariant #1 held (no self-granted
+  floor jumps). Fixed the real findings and re-verified:
+  - a guarded exit could be walked past → descent now blocked until the guard is
+    defeated (defeating it clears it from the room).
+  - stub-fallback monsters used floor-1 stats on deep floors → floor01 monsters
+    tagged with a tier and scaled by depth.
+
+### Known issues / notes for later
+- Worldgen gets a 120s timeout + 4096 max_tokens (it's a big between-levels call);
+  on timeout it falls back to deterministic content — proven live when the first
+  real call timed out and the descend still succeeded.
+- Still no leveling: monsters carry `xp` but there's no `players.xp` column (M5).
+- Alembic still deferred to M7; the two new nullable columns + three indexes are
+  additive. Devs must delete a stale M3 dev DB (create_all won't add columns).
+- Test-harness note: mutating the world DB from a bare session and immediately
+  reading it back through the graph is flaky under the SQLite test pool; tests set
+  such state up inside the provisioning session. The game never does this — tools
+  mutate within the graph's own session — and the real fight-guard-then-descend
+  flow is verified across seeds and live over HTTP.
+
+### Tests
+139 pytest, all green, no network/key. Worldgen validation/clamping is tested
+with a fake LLM (bad tiers/effects coerced; numbers always code-owned); the
+fallback + geometry determinism are pinned; the transition flow (descend creates
+floor 2, refuses off-exit, can't skip floors, combat on a generated floor) runs
+through the real graph.

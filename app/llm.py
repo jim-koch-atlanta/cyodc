@@ -48,7 +48,7 @@ MODEL_BY_ROLE: dict[str, str] = {
 MAX_TOKENS_BY_ROLE: dict[str, int] = {
     "dm": 512,
     "boss": 768,
-    "worldgen": 2048,
+    "worldgen": 4096,  # a whole floor of content
     "combat": 384,
     "npc": 384,
 }
@@ -59,6 +59,10 @@ TEMPERATURE_BY_ROLE: dict[str, float] = {
     "combat": 0.7,
     "npc": 0.85,
 }
+# Per-turn agents fail fast; worldgen runs BETWEEN levels and generates a lot, so
+# it gets a generous timeout (its failure just falls back to deterministic content).
+_DEFAULT_TIMEOUT = 30
+TIMEOUT_BY_ROLE: dict[str, int] = {"worldgen": 120}
 
 
 @lru_cache(maxsize=None)
@@ -125,6 +129,25 @@ def run_agent_with_tools(
     return reply if isinstance(reply, AIMessage) else AIMessage(content=message_text(reply))
 
 
+def run_structured(role: str, history: list[BaseMessage], schema: type):
+    """Return a validated `schema` instance (a Pydantic model) from one model call,
+    via the provider's structured-output path (Anthropic: a forced tool call — no
+    "please return JSON" prompting or markdown-fence parsing). Keeps model
+    selection + token budgets in this one gateway (invariant #5).
+
+    Real-model only: callers must gate on `resolved_llm_mode == "anthropic"` first
+    (stub mode has no structured path — e.g. worldgen falls back to deterministic
+    content before reaching here).
+    """
+    if role not in MODEL_BY_ROLE:
+        raise ValueError(f"unknown agent role: {role!r}")
+    if get_settings().resolved_llm_mode != "anthropic":
+        raise RuntimeError("run_structured needs a real model; gate the caller on anthropic mode")
+    system = load_system_prompt(role)
+    model = _build_anthropic(role).with_structured_output(schema)
+    return model.invoke([SystemMessage(content=system), *history])
+
+
 def _build_anthropic(role: str):
     # Imported lazily so stub mode / tests never require the SDK or a key.
     from langchain_anthropic import ChatAnthropic
@@ -134,7 +157,7 @@ def _build_anthropic(role: str):
         model=MODEL_BY_ROLE[role],
         max_tokens=MAX_TOKENS_BY_ROLE[role],
         temperature=TEMPERATURE_BY_ROLE[role],
-        timeout=30,
+        timeout=TIMEOUT_BY_ROLE.get(role, _DEFAULT_TIMEOUT),
         api_key=settings.anthropic_api_key,
     )
 
@@ -283,6 +306,11 @@ def _stub_intent_to_tool(text: str, available: set[str]) -> tuple[str, dict] | N
         r"\b(look|examine|inspect|survey|look around|where am i|what do i see)\b", t
     ):
         return "look", {}
+    # Descend must precede move: "go down the stairs" would otherwise read "down".
+    if "descend" in available and re.search(
+        r"\b(descend|down ?stairs|take the stairs|go down the stairs|next floor|go deeper|deeper in)\b", t
+    ):
+        return "descend", {}
     if "start_combat" in available:
         m = re.search(r"\b(?:attack|fight|kill|engage|strike|slay|assault|charge)\b\s*(.*)", t)
         if m:

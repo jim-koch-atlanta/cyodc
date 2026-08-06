@@ -29,9 +29,10 @@ from app.dungeon import (
     normalize_direction,
     reveal,
 )
-from app.encounters import start_encounter
+from app.encounters import active_encounter, start_encounter
 from app.tools.schemas import (
     CombatStartResult,
+    DescendResult,
     InventoryResult,
     InvItem,
     LookResult,
@@ -73,7 +74,7 @@ def _describe(session, level, dm, x, y):
     room = current_room(session, level, x, y)
     slugs = list(room.contents.get("items", [])) if room else []
     monster_slugs = list(room.contents.get("monsters", [])) if room else []
-    catalog = load_monster_catalog(level.floor)
+    catalog = load_monster_catalog(level.floor, level.monster_catalog)
     monsters = [catalog[s]["name"] if s in catalog else s for s in monster_slugs]
     return (
         room.kind if room else "corridor",
@@ -291,7 +292,7 @@ def start_combat(
     if not monster_slugs:
         return CombatStartResult(ok=False, message="There is nothing here to fight.").model_dump_json()
 
-    catalog = load_monster_catalog(player.floor)
+    catalog = load_monster_catalog(player.floor, level.monster_catalog)
     slug = _match_monster(target, monster_slugs, catalog)
     if slug is None:
         return CombatStartResult(
@@ -303,7 +304,7 @@ def start_combat(
     remaining = list(monster_slugs)
     remaining.remove(slug)
     room.contents["monsters"] = remaining
-    encounter = start_encounter(session, player, slug)
+    encounter = start_encounter(session, player, slug, catalog=catalog)
     name = encounter.monster["name"]
     return CombatStartResult(
         ok=True,
@@ -313,5 +314,33 @@ def start_combat(
     ).model_dump_json()
 
 
-DM_TOOLS = [look, move, take, use, inventory, start_combat]
+@tool
+def descend(
+    *,
+    session: Annotated[Session, InjectedToolArg],
+    player_id: Annotated[int, InjectedToolArg],
+) -> str:
+    """Take the staircase down to the next floor. Only works while standing in the exit room."""
+    player = session.get(Player, player_id)
+    if active_encounter(session, player_id) is not None:
+        return DescendResult(ok=False, message="Not while something is trying to kill you.").model_dump_json()
+    level = current_level(session, player)
+    room = current_room(session, level, player.pos_x, player.pos_y)
+    if room is None or room.kind != "exit":
+        return DescendResult(
+            ok=False, message="There are no stairs down here — find the exit first."
+        ).model_dump_json()
+    if room.contents.get("monsters"):  # a guard blocks the stairs until dealt with
+        return DescendResult(
+            ok=False, message="Something between you and the stairs objects, loudly. Deal with it first."
+        ).model_dump_json()
+    # Read-only signal; the worldgen node performs the actual transition. The
+    # replay gate is position: after the move, the player is on the new floor's
+    # entrance, so a re-run finds no exit here and returns transition=False.
+    return DescendResult(
+        ok=True, transition=True, message="You step onto the staircase and start down."
+    ).model_dump_json()
+
+
+DM_TOOLS = [look, move, take, use, inventory, start_combat, descend]
 TOOLS_BY_NAME = {t.name: t for t in DM_TOOLS}

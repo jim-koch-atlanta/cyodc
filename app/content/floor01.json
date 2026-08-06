@@ -69,7 +69,8 @@
       "attack_bonus": 1,
       "damage_dice": "1d4",
       "xp": 8,
-      "gold": 3
+      "gold": 3,
+      "tier": "weak"
     },
     {
       "slug": "intake-drone",
@@ -80,7 +81,8 @@
       "attack_bonus": 3,
       "damage_dice": "1d6",
       "xp": 15,
-      "gold": 6
+      "gold": 6,
+      "tier": "normal"
     },
     {
       "slug": "filing-specter",
@@ -91,7 +93,8 @@
       "attack_bonus": 2,
       "damage_dice": "1d6",
       "xp": 10,
-      "gold": 0
+      "gold": 0,
+      "tier": "weak"
     },
     {
       "slug": "shift-supervisor",
@@ -102,7 +105,8 @@
       "attack_bonus": 4,
       "damage_dice": "1d6+2",
       "xp": 25,
-      "gold": 15
+      "gold": 15,
+      "tier": "tough"
     }
   ]
 }

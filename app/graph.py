@@ -24,6 +24,7 @@ from langgraph.graph import END, START, StateGraph
 from app.config import get_settings
 from app.nodes.combat import combat_node
 from app.nodes.dm import dm_node
+from app.nodes.worldgen import worldgen_node
 from app.routing import route_from_dm
 from app.state import DMState
 
@@ -36,10 +37,19 @@ def build_graph(checkpointer):
     builder = StateGraph(DMState)
     builder.add_node("dm", dm_node)
     builder.add_node("combat", combat_node)
+    builder.add_node("worldgen", worldgen_node)
     builder.add_edge(START, "dm")
-    # The DM either ends the turn (exploration) or routes to combat (next_node).
-    builder.add_conditional_edges("dm", route_from_dm, {"combat": "combat", END: END})
-    builder.add_edge("combat", END)  # one round per turn; the DM re-routes next turn
+    # The DM ends the turn (exploration), routes to a combat round, or routes to
+    # worldgen (level transition). Each sub-node ends the turn; the DM re-routes
+    # on the next player input. worldgen -> END (not -> dm) keeps the descend turn
+    # to one model call — the arrival is narrated from the generated content.
+    builder.add_conditional_edges(
+        "dm",
+        route_from_dm,
+        {"combat": "combat", "level_transition": "worldgen", END: END},
+    )
+    builder.add_edge("combat", END)
+    builder.add_edge("worldgen", END)
     return builder.compile(checkpointer=checkpointer)
 
 
